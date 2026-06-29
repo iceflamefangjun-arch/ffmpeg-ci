@@ -325,7 +325,11 @@ run_cmake_configure() {
 		ninja_path="$(command -v ninja)"
 	fi
 
-	if [ -n "${ninja_path}" ]; then
+	if [ "${BUILD_HOST}" = "msys2" ] && [ -x /usr/bin/make ]; then
+		# CMake's Ninja generator on MSYS2 frequently trips over path conversion
+		# during compiler detection (TryCompile step), so prefer Unix Makefiles.
+		generator_args=(-G "Unix Makefiles" "-DCMAKE_MAKE_PROGRAM=/usr/bin/make")
+	elif [ -n "${ninja_path}" ]; then
 		generator_args=(-G Ninja "-DCMAKE_MAKE_PROGRAM=${ninja_path}")
 	elif [ -x /usr/bin/make ]; then
 		generator_args=(-G "Unix Makefiles" "-DCMAKE_MAKE_PROGRAM=/usr/bin/make")
