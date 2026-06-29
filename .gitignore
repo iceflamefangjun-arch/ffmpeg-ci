@@ -56,4 +56,6 @@ Desktop.ini
 *.rar
 *.mp4
 *.mkv
-*.isozlib/src/
+*.iso
+
+zlib/src/

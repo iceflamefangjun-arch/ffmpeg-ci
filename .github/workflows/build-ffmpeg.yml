@@ -40,18 +40,25 @@ jobs:
       FDK_AAC_REPO_URL: ${{ vars.FDK_AAC_REPO_URL }}
       X264_REPO_URL: ${{ vars.X264_REPO_URL }}
       MIRROR_REPO_TOKEN: ${{ secrets.MIRROR_REPO_TOKEN }}
+      WSL_DISTRO: Ubuntu-22.04
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Setup Ubuntu WSL
+        uses: Vampire/setup-wsl@v7
+        with:
+          distribution: Ubuntu-22.04
+          wsl-version: 1
+          set-as-default: 'true'
+
       - name: Prepare WSL build environment
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          wsl.exe --status
           wsl.exe --list --verbose
-          wsl.exe bash -lc @'
+          wsl.exe -d $env:WSL_DISTRO --exec bash -lc @'
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y ca-certificates wget gnupg lsb-release software-properties-common
@@ -96,7 +103,7 @@ jobs:
           }
 
           function Convert-ToWslPath([string]$Path) {
-            $converted = & wsl.exe wslpath -a $Path
+            $converted = & wsl.exe -d $env:WSL_DISTRO --exec wslpath -a $Path
             if ($LASTEXITCODE -ne 0 -or -not $converted) {
               throw "Failed to convert path for WSL: $Path"
             }
@@ -150,7 +157,7 @@ jobs:
             "CLANG_SHELL_WORKSPACE=$env:CLANG_SHELL_WORKSPACE"
             "DEPENDSPATH=$env:DEPENDSPATH"
           )
-          wsl.exe env $wslEnv bash -lc @'
+          wsl.exe -d $env:WSL_DISTRO --exec env $wslEnv bash -lc @'
           set -euo pipefail
           if [ -n "${MIRROR_REPO_TOKEN:-}" ]; then
             git config --global url."https://x-access-token:${MIRROR_REPO_TOKEN}@github.com/".insteadOf "https://github.com/"
@@ -181,7 +188,7 @@ jobs:
             "X264_REPO_URL=$env:X264_REPO_URL"
           )
 
-          wsl.exe env $wslEnv bash -lc @"
+          wsl.exe -d $env:WSL_DISTRO --exec env $wslEnv bash -lc @"
           set -euo pipefail
           cd "\$CLANG_SHELL_WORKSPACE"
           chmod +x "$script"
