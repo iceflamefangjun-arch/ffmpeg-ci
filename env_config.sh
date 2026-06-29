@@ -324,7 +324,7 @@ run_cmake_configure() {
 	fi
 
 	echo "CMake generator: ${generator_args[*]:-(default)}"
-	cmake "${generator_args[@]}" "$@" || exit
+	cmake "${generator_args[@]}" "-DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY" "$@" || exit
 }
 
 run_cmake_build_install() {
