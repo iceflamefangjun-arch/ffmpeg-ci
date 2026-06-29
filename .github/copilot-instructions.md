@@ -1,4 +1,4 @@
-﻿# clang-shell Copilot Instructions
+# clang-shell Copilot Instructions
 
 ## Scope and role
 - This repository contains the Windows FFmpeg dependency build scripts that were previously kept under `ijkplayer/clang-shell`.

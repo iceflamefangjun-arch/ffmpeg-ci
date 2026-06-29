@@ -1,4 +1,4 @@
-﻿From 83e6a1aa986fef7a5c44f008baae36e2e0059cac Mon Sep 17 00:00:00 2001
+From 83e6a1aa986fef7a5c44f008baae36e2e0059cac Mon Sep 17 00:00:00 2001
 From: qianlongxu <qianlongxu@gmail.com>
 Date: Wed, 28 May 2025 18:33:27 +0800
 Subject: [PATCH] restore ijk av_dict_get that converts the value to a pointer

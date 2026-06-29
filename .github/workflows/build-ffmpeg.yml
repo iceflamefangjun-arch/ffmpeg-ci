@@ -1,4 +1,4 @@
-﻿name: Build FFmpeg
+name: Build FFmpeg
 
 on:
   workflow_dispatch:
@@ -58,7 +58,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           wsl.exe --list --verbose
-          wsl.exe -d $env:WSL_DISTRO --exec bash -lc @'
+          $bashScript = @'
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y ca-certificates wget gnupg lsb-release software-properties-common
@@ -70,6 +70,8 @@ jobs:
           sudo apt-get install -y git curl zip pkg-config cmake autoconf automake libtool make python3 nasm yasm build-essential
           /usr/lib/llvm-21/bin/clang-cl --version
           '@
+          $bashScript = $bashScript -replace "`r`n?", "`n"
+          wsl.exe -d $env:WSL_DISTRO --exec bash -lc $bashScript
 
       - name: Resolve Visual Studio and SDK paths
         shell: pwsh
@@ -157,7 +159,7 @@ jobs:
             "CLANG_SHELL_WORKSPACE=$env:CLANG_SHELL_WORKSPACE"
             "DEPENDSPATH=$env:DEPENDSPATH"
           )
-          wsl.exe -d $env:WSL_DISTRO --exec env $wslEnv bash -lc @'
+          $bashScript = @'
           set -euo pipefail
           if [ -n "${MIRROR_REPO_TOKEN:-}" ]; then
             git config --global url."https://x-access-token:${MIRROR_REPO_TOKEN}@github.com/".insteadOf "https://github.com/"
@@ -166,6 +168,8 @@ jobs:
           git config --global --add safe.directory "$CLANG_SHELL_WORKSPACE"
           mkdir -p "$DEPENDSPATH"
           '@
+          $bashScript = $bashScript -replace "`r`n?", "`n"
+          wsl.exe -d $env:WSL_DISTRO --exec env $wslEnv bash -lc $bashScript
 
       - name: Build FFmpeg
         shell: pwsh
@@ -188,12 +192,14 @@ jobs:
             "X264_REPO_URL=$env:X264_REPO_URL"
           )
 
-          wsl.exe -d $env:WSL_DISTRO --exec env $wslEnv bash -lc @"
+          $bashScript = @"
           set -euo pipefail
           cd "\$CLANG_SHELL_WORKSPACE"
           chmod +x "$script"
           ./"$script" "$arch" "$buildType"
           "@
+          $bashScript = $bashScript -replace "`r`n?", "`n"
+          wsl.exe -d $env:WSL_DISTRO --exec env $wslEnv bash -lc $bashScript
 
       - name: Upload FFmpeg artifact
         uses: actions/upload-artifact@v4
