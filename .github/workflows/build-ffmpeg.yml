@@ -73,9 +73,32 @@ jobs:
           path-exclude=/usr/share/man/*
           path-exclude=/usr/share/info/*
           EOF
+          sudo tee /etc/apt/apt.conf.d/99-ci-no-triggers >/dev/null <<'EOF'
+          DPkg::Options {
+            "--no-triggers";
+          };
+          EOF
+
+          sudo tee /usr/local/sbin/ci-noop >/dev/null <<'EOF'
+          #!/bin/sh
+          exit 0
+          EOF
+          sudo chmod +x /usr/local/sbin/ci-noop
+          disable_info_triggers() {
+            if [ -e /usr/sbin/update-info-dir ] && [ ! -L /usr/sbin/update-info-dir ]; then
+              sudo dpkg-divert --local --rename --add /usr/sbin/update-info-dir || true
+            fi
+            sudo ln -sf /usr/local/sbin/ci-noop /usr/sbin/update-info-dir
+            if [ -f /var/lib/dpkg/info/install-info.postinst ]; then
+              sudo cp /usr/local/sbin/ci-noop /var/lib/dpkg/info/install-info.postinst
+            fi
+          }
+          disable_info_triggers
 
           apt_install() {
-            sudo apt-get -o Dpkg::Use-Pty=0 install -y --no-install-recommends "$@"
+            disable_info_triggers
+            sudo apt-get -o Dpkg::Use-Pty=0 -o DPkg::Options::=--no-triggers install -y --no-install-recommends "$@"
+            disable_info_triggers
           }
 
           echo "::group::APT update"
@@ -90,7 +113,9 @@ jobs:
             echo "::group::Install LLVM 21"
             wget -q https://apt.llvm.org/llvm.sh -O /tmp/llvm.sh
             chmod +x /tmp/llvm.sh
+            disable_info_triggers
             sudo /tmp/llvm.sh 21
+            disable_info_triggers
             echo "::endgroup::"
           fi
 
