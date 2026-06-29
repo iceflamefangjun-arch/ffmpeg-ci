@@ -311,12 +311,20 @@ print_build_environment_once() {
 
 run_cmake_configure() {
 	local generator_args=()
+	local ninja_path=
 
 	if command -v ninja >/dev/null 2>&1; then
-		generator_args=(-G Ninja)
+		ninja_path="$(command -v ninja)"
 	fi
 
-	cmake "${generator_args[@]}" "$@"
+	if [ -n "${ninja_path}" ] && [[ "${ninja_path}" = /usr/bin/* || "${ninja_path}" = /mingw*/bin/* ]]; then
+		generator_args=(-G Ninja "-DCMAKE_MAKE_PROGRAM=${ninja_path}")
+	elif [ -x /usr/bin/make ]; then
+		generator_args=(-G "Unix Makefiles" "-DCMAKE_MAKE_PROGRAM=/usr/bin/make")
+	fi
+
+	echo "CMake generator: ${generator_args[*]:-(default)}"
+	cmake "${generator_args[@]}" "$@" || exit
 }
 
 run_cmake_build_install() {
