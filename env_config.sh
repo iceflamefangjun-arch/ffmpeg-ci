@@ -309,6 +309,14 @@ print_build_environment_once() {
 	"${RC}" --version 2>/dev/null | head -n 1 || true
 }
 
+cmake_tool_path() {
+	local tool_name="$1"
+	local tool_path
+
+	tool_path="$(command -v "${tool_name}" 2>/dev/null)" || tool_path="${tool_name}"
+	printf '%s\n' "${tool_path}"
+}
+
 run_cmake_configure() {
 	local generator_args=()
 	local ninja_path=
@@ -317,7 +325,7 @@ run_cmake_configure() {
 		ninja_path="$(command -v ninja)"
 	fi
 
-	if [ -n "${ninja_path}" ] && [[ "${ninja_path}" = /usr/bin/* || "${ninja_path}" = /mingw*/bin/* ]]; then
+	if [ -n "${ninja_path}" ]; then
 		generator_args=(-G Ninja "-DCMAKE_MAKE_PROGRAM=${ninja_path}")
 	elif [ -x /usr/bin/make ]; then
 		generator_args=(-G "Unix Makefiles" "-DCMAKE_MAKE_PROGRAM=/usr/bin/make")

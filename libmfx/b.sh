@@ -93,7 +93,13 @@ do
           "-DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}" "-DCMAKE_INSTALL_LIBDIR=lib" \
           "-DCMAKE_POLICY_VERSION_MINIMUM=3.5" \
           "-DCMAKE_SYSTEM_NAME=Windows" "-DCMAKE_MSVC_RUNTIME_LIBRARY=" \
-          "-DCMAKE_AR=${AR}" "-DCMAKE_NM=${NM}" "-DCMAKE_MT=${MT}" "-DCMAKE_RC_COMPILER=${RC}" \
+          "-DCMAKE_AR=$(cmake_tool_path "${AR}")" \
+          "-DCMAKE_NM=$(cmake_tool_path "${NM}")" \
+          "-DCMAKE_MT=$(cmake_tool_path "${MT}")" \
+          "-DCMAKE_RC_COMPILER=$(cmake_tool_path "${RC}")" \
+          "-DCMAKE_LINKER=$(cmake_tool_path "${LD}")" \
+          "-DCMAKE_C_COMPILER=$(cmake_tool_path "${CC}")" \
+          "-DCMAKE_CXX_COMPILER=$(cmake_tool_path "${CXX}")" \
           "-DCMAKE_C_FLAGS_RELEASE=/Ob2" "-DCMAKE_CXX_FLAGS_RELEASE=/Ob2" \
           "-DCMAKE_VERBOSE_MAKEFILE=ON" "${WSLSRC}" || exit
 
