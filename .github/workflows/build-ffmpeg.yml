@@ -60,14 +60,44 @@ jobs:
           wsl.exe --list --verbose
           $bashScript = @'
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y ca-certificates wget gnupg lsb-release software-properties-common
+
+          export DEBIAN_FRONTEND=noninteractive
+          export NEEDRESTART_MODE=a
+          export APT_LISTCHANGES_FRONTEND=none
+
+          sudo rm -f /var/lib/man-db/auto-update
+          sudo mkdir -p /etc/dpkg/dpkg.cfg.d
+          sudo tee /etc/dpkg/dpkg.cfg.d/01-ci-nodoc >/dev/null <<'EOF'
+          path-exclude=/usr/share/doc/*
+          path-include=/usr/share/doc/*/copyright
+          path-exclude=/usr/share/man/*
+          path-exclude=/usr/share/info/*
+          EOF
+
+          apt_install() {
+            sudo apt-get -o Dpkg::Use-Pty=0 install -y --no-install-recommends "$@"
+          }
+
+          echo "::group::APT update"
+          sudo apt-get -o Dpkg::Use-Pty=0 update
+          echo "::endgroup::"
+
+          echo "::group::Install bootstrap packages"
+          apt_install ca-certificates wget gnupg lsb-release software-properties-common
+          echo "::endgroup::"
+
           if [ ! -x /usr/lib/llvm-21/bin/clang-cl ]; then
+            echo "::group::Install LLVM 21"
             wget -q https://apt.llvm.org/llvm.sh -O /tmp/llvm.sh
             chmod +x /tmp/llvm.sh
             sudo /tmp/llvm.sh 21
+            echo "::endgroup::"
           fi
-          sudo apt-get install -y git curl zip pkg-config cmake autoconf automake libtool make python3 nasm yasm build-essential
+
+          echo "::group::Install build packages"
+          apt_install git curl zip pkg-config cmake autoconf automake libtool make python3 nasm yasm build-essential
+          echo "::endgroup::"
+
           /usr/lib/llvm-21/bin/clang-cl --version
           '@
           $bashScript = $bashScript -replace "`r`n?", "`n"
