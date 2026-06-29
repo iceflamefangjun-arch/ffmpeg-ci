@@ -1,0 +1,17 @@
+diff --git a/src/vm/vm.c b/src/vm/vm.c
+index 6c64e59..6ed1976 100644
+--- a/src/vm/vm.c
++++ b/src/vm/vm.c
+@@ -28,7 +28,12 @@
+ #include <stdio.h>
+ #include <string.h>
+ #include <stdlib.h>
++#ifdef _WIN32
++#include <windows.h>
++#include <io.h>
++#else
+ #include <unistd.h>
++#endif
+ #include <inttypes.h>
+ #include <limits.h>
+ #include <assert.h>

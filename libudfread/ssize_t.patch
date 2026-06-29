@@ -1,0 +1,32 @@
+diff --git a/src/default_blockinput.h b/src/default_blockinput.h
+index 2280a51..f443b77 100644
+--- a/src/default_blockinput.h
++++ b/src/default_blockinput.h
+@@ -24,6 +24,11 @@
+ 
+ #include "blockinput.h"
+ 
++#if defined(_MSC_VER)
++#include <basetsd.h>
++typedef SSIZE_T ssize_t;
++#endif
++
+ 
+ udfread_block_input *block_input_new(const char *path);
+ 
+diff --git a/src/udfread.h b/src/udfread.h
+index dcce516..008489a 100644
+--- a/src/udfread.h
++++ b/src/udfread.h
+@@ -29,6 +29,11 @@ extern "C" {
+ #include <stdint.h>    /* *int_t */
+ #include <sys/types.h> /* *size_t */
+ 
++#if defined(_MSC_VER)
++#include <basetsd.h>
++typedef SSIZE_T ssize_t;
++#endif
++
+ /**
+  * @file udfread/udfread.h
+  * external API header

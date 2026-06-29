@@ -1,0 +1,40 @@
+From c54f5ccc18c3d5c981c4ff8d07d5ec4948cd63a6 Mon Sep 17 00:00:00 2001
+From: qianlongxu <qianlongxu@gmail.com>
+Date: Tue, 27 May 2025 16:04:03 +0800
+Subject: [PATCH] clean avio error when meet eof or read data
+
+---
+ libavformat/aviobuf.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/libavformat/aviobuf.c b/libavformat/aviobuf.c
+index 2899c75..d693af8 100644
+--- a/libavformat/aviobuf.c
++++ b/libavformat/aviobuf.c
+@@ -597,6 +597,7 @@ static void fill_buffer(AVIOContext *s)
+         /* do not modify buffer if EOF reached so that a seek back can
+            be done without rereading data */
+         s->eof_reached = 1;
++        s->error = 0;
+     } else if (len < 0) {
+         s->eof_reached = 1;
+         s->error= len;
+@@ -671,6 +672,7 @@ int avio_read(AVIOContext *s, unsigned char *buf, int size)
+                     /* do not modify buffer if EOF reached so that a seek back can
+                     be done without rereading data */
+                     s->eof_reached = 1;
++                    s->error = 0;
+                     break;
+                 } else if (len < 0) {
+                     s->eof_reached = 1;
+@@ -685,6 +687,7 @@ int avio_read(AVIOContext *s, unsigned char *buf, int size)
+                     // reset the buffer
+                     s->buf_ptr = s->buffer;
+                     s->buf_end = s->buffer/* + len*/;
++                    s->error = 0;
+                 }
+             } else {
+                 fill_buffer(s);
+-- 
+2.39.5 (Apple Git-154)
+

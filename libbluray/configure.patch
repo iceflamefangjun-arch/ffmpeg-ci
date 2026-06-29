@@ -1,0 +1,15 @@
+diff --git a/configure.ac b/configure.ac
+index c7016344..244815be 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -155,8 +155,8 @@ AC_STRUCT_DIRENT_D_TYPE
+ dnl required system services
+ AC_SYS_LARGEFILE
+ 
+-dnl required functions
+-AC_CHECK_FUNC([snprintf],, [AC_MSG_ERROR($function_not_found)])
++#dnl required functions
++#AC_CHECK_FUNC([snprintf],, [AC_MSG_ERROR($function_not_found)])
+ 
+ dnl required libraries
+ dnl pthreads (not on win32)

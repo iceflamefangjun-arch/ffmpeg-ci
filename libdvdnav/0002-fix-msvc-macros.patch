@@ -1,0 +1,28 @@
+diff --git a/src/dvdnav_internal.h b/src/dvdnav_internal.h
+index 495f032..0193f24 100644
+--- a/src/dvdnav_internal.h
++++ b/src/dvdnav_internal.h
+@@ -233,8 +233,8 @@ int64_t dvdnav_convert_time(dvd_time_t *time);
+     do { if (this) snprintf(this->err_str, MAX_ERR_LEN, format, ## args); } while (0)
+ #else
+ #ifdef _MSC_VER
+-#define printerrf(str) \
+-    do { if (this) snprintf(this->err_str, MAX_ERR_LEN, str); } while (0)
++#define printerrf(...) \
++    do { if (this) snprintf(this->err_str, MAX_ERR_LEN, __VA_ARGS__); } while (0)
+ #else
+ #define printerrf(...) \
+     do { if (this) snprintf(this->err_str, MAX_ERR_LEN, __VA_ARGS__); } while (0)
+diff --git a/src/read_cache.c b/src/read_cache.c
+index 1b2862d..eabbd66 100644
+--- a/src/read_cache.c
++++ b/src/read_cache.c
+@@ -88,7 +88,7 @@ struct read_cache_s {
+ #  define dprintf(fmt, ...) fprintf(MSG_OUT, "libdvdnav: %s: "fmt,  __func__ , __VA_ARGS__)
+ # else
+ #ifdef _MSC_VER
+-#  define dprintf(fmt, str) /* Nowt */
++#  define dprintf(fmt, ...) /* Nowt */
+ #else
+ #  define dprintf(fmt, ...) /* Nowt */
+ #endif /* _MSC_VER */

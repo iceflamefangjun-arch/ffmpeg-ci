@@ -1,0 +1,1051 @@
+From faf32310942691973137925a075494c134e69cef Mon Sep 17 00:00:00 2001
+From: qianlongxu <qianlongxu@gmail.com>
+Date: Tue, 9 Sep 2025 10:30:27 +0800
+Subject: [PATCH] custom bluray fs for network Blu-ray Disc and BDMV
+
+---
+ libavformat/Makefile           |   2 +-
+ libavformat/bluray.c           | 148 +++++++--
+ libavformat/bluray_custom_fs.c | 536 +++++++++++++++++++++++++++++++++
+ libavformat/bluray_custom_fs.h |  33 ++
+ libavformat/lrucache.c         | 112 +++++++
+ libavformat/lrucache.h         |  30 ++
+ 6 files changed, 842 insertions(+), 19 deletions(-)
+ create mode 100644 libavformat/bluray_custom_fs.c
+ create mode 100644 libavformat/bluray_custom_fs.h
+ create mode 100644 libavformat/lrucache.c
+ create mode 100644 libavformat/lrucache.h
+
+diff --git a/libavformat/Makefile b/libavformat/Makefile
+index e299e72..13b14f5 100644
+--- a/libavformat/Makefile
++++ b/libavformat/Makefile
+@@ -679,7 +679,7 @@ OBJS-$(CONFIG_VAPOURSYNTH_DEMUXER)       += vapoursynth.o
+ OBJS-$(CONFIG_ANDROID_CONTENT_PROTOCOL)  += file.o
+ OBJS-$(CONFIG_ASYNC_PROTOCOL)            += async.o
+ OBJS-$(CONFIG_APPLEHTTP_PROTOCOL)        += hlsproto.o
+-OBJS-$(CONFIG_BLURAY_PROTOCOL)           += bluray.o
++OBJS-$(CONFIG_BLURAY_PROTOCOL)           += bluray.o bluray_custom_fs.o lrucache.o
+ OBJS-$(CONFIG_CACHE_PROTOCOL)            += cache.o
+ OBJS-$(CONFIG_CONCAT_PROTOCOL)           += concat.o
+ OBJS-$(CONFIG_CONCATF_PROTOCOL)          += concat.o
+diff --git a/libavformat/bluray.c b/libavformat/bluray.c
+index 1845551..c162da3 100644
+--- a/libavformat/bluray.c
++++ b/libavformat/bluray.c
+@@ -20,24 +20,29 @@
+  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+  */
+ 
+-#include <libbluray/bluray.h>
+-
+-#include "libavutil/avstring.h"
++#include "bluray_custom_fs.h"
++#include "libavformat/avformat.h"
+ #include "libavformat/url.h"
++#include "libavformat/urldecode.h"
++#include "libavutil/avstring.h"
++#include "libavutil/dict.h"
+ #include "libavutil/opt.h"
++#include <libbluray/bluray.h>
+ 
+-#define BLURAY_PROTO_PREFIX     "bluray:"
++#define BLURAY_PROTO_PREFIX     "bluray://"
+ #define MIN_PLAYLIST_LENGTH     180     /* 3 min */
+ 
+ typedef struct {
+     const AVClass *class;
+ 
+     BLURAY *bd;
+-
++    fs_access *access;
+     int playlist;
+     int angle;
+     int chapter;
+     /*int region;*/
++    int title_idx;
++
+ } BlurayContext;
+ 
+ #define OFFSET(x) offsetof(BlurayContext, x)
+@@ -106,23 +111,63 @@ static int bluray_close(URLContext *h)
+     if (bd->bd) {
+         bd_close(bd->bd);
+     }
+-
++    destroy_bluray_custom_access(&bd->access);
+     return 0;
+ }
+ 
+-static int bluray_open(URLContext *h, const char *path, int flags)
++#ifdef DEBUG_BLURAY
++#include <libbluray/log_control.h>
++#define BLURAY_DEBUG_MASK 0xFFFFF //(0xFFFFF & ~DBG_STREAM)
++
++static void bluray_DebugHandler(const char *psz)
++{
++    size_t len = strlen(psz);
++    if (len < 1)
++        return;
++    av_log(NULL, AV_LOG_INFO, "[bluray] %s\n", psz);
++}
++#endif
++
++static int bluray_open(URLContext *h, const char *path, int flags,
++                       AVDictionary **options)
+ {
++#ifdef DEBUG_BLURAY
++    bd_set_debug_mask(BLURAY_DEBUG_MASK);
++    bd_set_debug_handler(bluray_DebugHandler);
++#endif
+     BlurayContext *bd = h->priv_data;
+     int num_title_idx;
+     const char *diskname = path;
+ 
+     av_strstart(path, BLURAY_PROTO_PREFIX, &diskname);
+ 
+-    bd->bd = bd_open(diskname, NULL);
+-    if (!bd->bd) {
++    diskname = ff_urldecode(diskname, 0);
++
++    fs_access *access = NULL;
++    // 判断是否为本地文件路径（不需要 custom access）
++    // 包括：file:// 协议、Unix 绝对路径 /、Windows 路径 C:\、Windows UNC \\server
++    int is_local_file = av_strstart(diskname, "file://", NULL) ||
++                        av_strstart(diskname, "/", NULL) ||
++                        (diskname[0] != '\0' &&
++                         ((diskname[1] == ':' && ((diskname[0] >= 'a' && diskname[0] <= 'z') ||
++                                                   (diskname[0] >= 'A' && diskname[0] <= 'Z'))) ||
++                          (diskname[0] == '\\' && diskname[1] == '\\')));
++
++    // file protocol can't handle AVIO_FLAG_DIRECT flag, so local file not create custom access
++    if (!is_local_file) {
++        access = create_bluray_custom_access(diskname, options, &h->interrupt_callback);
++    }
++
++    bd->bd = bd_open_fs(diskname, NULL, access);
++
++    if (!bd->bd || is_bluray_custom_access_cancelled(access)) {
+         av_log(h, AV_LOG_ERROR, "bd_open() failed\n");
++        if (access) {
++            destroy_bluray_custom_access(&access);
++        }
+         return AVERROR(EIO);
+     }
++    bd->access = access;
+ 
+     /* check if disc can be played */
+     if (check_disc_info(h) < 0) {
+@@ -137,7 +175,7 @@ static int bluray_open(URLContext *h, const char *path, int flags)
+     }
+     */
+ 
+-    /* load title list */
++    /* load title list BDMV/PLAYLIST */
+     num_title_idx = bd_get_titles(bd->bd, TITLES_RELEVANT, MIN_PLAYLIST_LENGTH);
+     av_log(h, AV_LOG_INFO, "%d usable playlists:\n", num_title_idx);
+     if (num_title_idx < 1) {
+@@ -150,26 +188,31 @@ static int bluray_open(URLContext *h, const char *path, int flags)
+         int i;
+         for (i = 0; i < num_title_idx; i++) {
+             BLURAY_TITLE_INFO *info = bd_get_title_info(bd->bd, i, 0);
++            if (!info) {
++                continue;
++            }
+ 
+             av_log(h, AV_LOG_INFO, "playlist %05d.mpls (%d:%02d:%02d)\n",
+-                   info->playlist,
+-                   ((int)(info->duration / 90000) / 3600),
++                   info->playlist, ((int)(info->duration / 90000) / 3600),
+                    ((int)(info->duration / 90000) % 3600) / 60,
+                    ((int)(info->duration / 90000) % 60));
+ 
+             if (info->duration > duration) {
+                 bd->playlist = info->playlist;
++                bd->title_idx = i;
+                 duration = info->duration;
+             }
+ 
+             bd_free_title_info(info);
+         }
+-        av_log(h, AV_LOG_INFO, "selected %05d.mpls\n", bd->playlist);
++        av_log(h, AV_LOG_INFO, "select longest playlist: %05d.mpls\n",
++               bd->playlist);
+     }
+ 
+     /* select playlist */
+-    if (bd_select_playlist(bd->bd, bd->playlist) <= 0) {
+-        av_log(h, AV_LOG_ERROR, "bd_select_playlist(%05d.mpls) failed\n", bd->playlist);
++    if (bd->playlist >= 0 && bd_select_playlist(bd->bd, bd->playlist) <= 0) {
++        av_log(h, AV_LOG_ERROR, "bd_select_playlist(%05d.mpls) failed\n",
++               bd->playlist);
+         return AVERROR(EIO);
+     }
+ 
+@@ -182,7 +225,6 @@ static int bluray_open(URLContext *h, const char *path, int flags)
+     if (bd->chapter > 1) {
+         bd_seek_chapter(bd->bd, bd->chapter - 1);
+     }
+-
+     return 0;
+ }
+ 
+@@ -213,7 +255,6 @@ static int64_t bluray_seek(URLContext *h, int64_t pos, int whence)
+     case SEEK_CUR:
+     case SEEK_END:
+         return bd_seek(bd->bd, pos);
+-
+     case AVSEEK_SIZE:
+         return bd_get_title_size(bd->bd);
+     }
+@@ -222,13 +263,84 @@ static int64_t bluray_seek(URLContext *h, int64_t pos, int whence)
+     return AVERROR(EINVAL);
+ }
+ 
++static int bluray_parse_priv(AVFormatContext *ic, URLContext *h)
++{
++    BlurayContext *bd = h->priv_data;
++    BLURAY_TITLE_INFO *title_info = NULL;
++    BLURAY_CLIP_INFO clip_info;
++
++    int v_idx = 0;
++    int a_idx = 0;
++    int s_idx = 0;
++    int ret = 0;
++
++    if (!bd || !bd->bd) {
++        return AVERROR(EFAULT);
++    }
++
++    title_info = bd_get_title_info(bd->bd, bd->title_idx, 0);
++    if (!title_info) {
++        return AVERROR(EFAULT);
++    }
++
++    if (title_info->clip_count <= 0) {
++        ret = EFAULT;
++        goto fail;
++    }
++    clip_info = title_info->clips[0];
++
++    for (int i = 0; i < ic->nb_streams; i++) {
++        if (ic->streams[i] && ic->streams[i]->codecpar) {
++            switch (ic->streams[i]->codecpar->codec_type) {
++            case AVMEDIA_TYPE_VIDEO:
++                if (v_idx < clip_info.video_stream_count) {
++                    av_log(h, AV_LOG_INFO, "video stream %d lang = %s\n", v_idx,
++                           clip_info.video_streams[v_idx].lang);
++                    av_dict_set(&ic->streams[i]->metadata, "language",
++                                clip_info.video_streams[v_idx].lang,
++                                AV_DICT_DONT_OVERWRITE);
++                    v_idx++;
++                }
++                break;
++            case AVMEDIA_TYPE_AUDIO:
++                if (a_idx < clip_info.audio_stream_count) {
++                    av_log(h, AV_LOG_INFO, "audio stream %d lang = %s\n", a_idx,
++                           clip_info.audio_streams[a_idx].lang);
++                    av_dict_set(&ic->streams[i]->metadata, "language",
++                                clip_info.audio_streams[a_idx].lang,
++                                AV_DICT_DONT_OVERWRITE);
++                    a_idx++;
++                }
++                break;
++            case AVMEDIA_TYPE_SUBTITLE:
++                if (s_idx < clip_info.pg_stream_count) {
++                    av_log(h, AV_LOG_INFO, "subtitle stream %d lang = %s\n",
++                           s_idx, clip_info.pg_streams[s_idx].lang);
++                    av_dict_set(&ic->streams[i]->metadata, "language",
++                                clip_info.pg_streams[s_idx].lang,
++                                AV_DICT_DONT_OVERWRITE);
++                    s_idx++;
++                }
++                break;
++            default:
++                break;
++            }
++        }
++    }
++
++fail:
++    bd_free_title_info(title_info);
++
++    return ret != 0 ? AVERROR(ret) : 0;
++}
+ 
+ const URLProtocol ff_bluray_protocol = {
+     .name            = "bluray",
+     .url_close       = bluray_close,
+-    .url_open        = bluray_open,
++    .url_open2       = bluray_open,
+     .url_read        = bluray_read,
+     .url_seek        = bluray_seek,
++    .url_parse_priv  = bluray_parse_priv,
+     .priv_data_size  = sizeof(BlurayContext),
+     .priv_data_class = &bluray_context_class,
+ };
+diff --git a/libavformat/bluray_custom_fs.c b/libavformat/bluray_custom_fs.c
+new file mode 100644
+index 0000000..70cb00f
+--- /dev/null
++++ b/libavformat/bluray_custom_fs.c
+@@ -0,0 +1,562 @@
++//
++//  bluray_custom_fs_smb2.c
++//
++//  Created by Reach Matt on 2024/9/13.
++//
++//
++// Copyright (C) 2021 Matt Reach<qianlongxu@gmail.com>//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//      http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++#include "bluray_custom_fs.h"
++#include "application.h"
++#include "libavutil/avstring.h"
++#include "libavutil/error.h"
++#include "libavutil/mem.h"
++#include "lrucache.h"
++#include "url.h"
++#include <libbluray/bluray-fs.h>
++#include <memory.h>
++
++#ifndef UDF_BLOCK_SIZE
++#define UDF_BLOCK_SIZE 2048
++#endif
++
++typedef struct ff_builtin_io {
++    URLContext *url_context;
++    AVApplicationContext *app_ctx;
++    int64_t offset;
++    int64_t last_read;
++
++    int allow_cache;
++    LRUCache *cache;
++    int cache_buff_size;
++    int sum;
++    int hit_count;
++} ff_builtin_io;
++
++typedef struct ff_bluray_access {
++    const char *url;
++    AVDictionary *opts;
++    ff_builtin_io *io;
++    const AVIOInterruptCB *int_cb;
++    int cancel;
++} ff_bluray_access;
++
++static void close_builtin_io(ff_builtin_io *io)
++{
++    if (!io) {
++        return;
++    }
++    if (io->url_context) {
++        ffurl_closep(&io->url_context);
++    }
++    if (io->cache) {
++        lRUCacheFree(io->cache);
++        io->cache = NULL;
++    }
++}
++
++static int create_builtin_io(ff_builtin_io **io, const char *url,
++                             AVDictionary **opts, int is_dir,
++                             const AVIOInterruptCB *int_cb)
++{
++    if (!io) {
++        return -1;
++    }
++
++    // 防止递归：如果 URL 仍然以 bluray: 开头，说明前缀未正确剥离
++    if (av_strstart(url, "bluray:", NULL)) {
++        av_log(NULL, AV_LOG_ERROR, "[bluray] recursive URL detected, "
++               "protocol prefix not properly stripped: %s\n", url);
++        return -1;
++    }
++
++    // 防御性检查：确保 URL 不为空
++    if (!url || url[0] == '\0') {
++        av_log(NULL, AV_LOG_ERROR, "[bluray] empty URL after protocol stripping\n");
++        return -1;
++    }
++
++    // 防御性检查：确保 protocol_whitelist 不包含 bluray（防止外部传入错误的白名单）
++    if (opts) {
++        AVDictionaryEntry *proto_dict = av_dict_get(*opts, "protocol_whitelist", NULL, 0);
++        if (proto_dict && proto_dict->value) {
++            // 简单检查字符串中是否包含 "bluray"
++            if (strstr(proto_dict->value, "bluray")) {
++                av_log(NULL, AV_LOG_ERROR, "[bluray] protocol_whitelist contains 'bluray', "
++                       "this would cause infinite recursion: %s\n", proto_dict->value);
++                return -1;
++            }
++        }
++    }
++
++    ff_builtin_io *app = av_mallocz(sizeof(ff_builtin_io));
++    if (!app) {
++        return -2;
++    }
++
++    const char *protocol_whitelist = NULL;
++
++    if (opts) {
++        const AVDictionary *dict = *opts;
++
++        if (!av_strstart(url, "http", NULL) &&
++            !av_strstart(url, "smb2", NULL)) {
++            AVDictionaryEntry *app_dict =
++                av_dict_get(dict, "ijkapplication", NULL, 0);
++            if (app_dict) {
++                app->app_ctx =
++                    (AVApplicationContext *)av_dict_strtoptr(app_dict->value);
++                av_application_will_http_open(app->app_ctx, NULL, url);
++            }
++        }
++
++        AVDictionaryEntry *proto_dict =
++            av_dict_get(dict, "protocol_whitelist", NULL, 0);
++        if (proto_dict) {
++            protocol_whitelist = av_strdup(proto_dict->value);
++        }
++
++        AVDictionaryEntry *cache_dict =
++                av_dict_get(dict, "bluray_allow_cache", NULL, 0);
++        if (cache_dict && (strcmp(cache_dict->value, "1") == 0 ||
++                           strcmp(cache_dict->value, "true") == 0)) {
++            app->allow_cache = 1;
++        }
++    }
++
++    if (protocol_whitelist == NULL || strlen(protocol_whitelist) == 0) {
++        protocol_whitelist = "ijkio,ijkhttphook,http,tcp,https,tls,file,smb2";
++    }
++
++    int flags = AVIO_FLAG_READ;
++    if (is_dir) {
++        flags |= AVIO_FLAG_DIRECT;
++    }
++
++    int ret = ffurl_open_whitelist(&app->url_context, url, flags, int_cb, opts,
++                                   protocol_whitelist, NULL, NULL);
++
++    av_application_did_http_open(app->app_ctx, (void *)app->url_context, url,
++                                 ret < 0 ? AVERROR(errno) : 0,
++                                 ret < 0 ? 500 : 200, 0);
++    if (ret < 0) {
++        close_builtin_io(app);
++        av_freep(&app);
++    }
++    *io = app;
++    return ret;
++}
++
++static int64_t seek_builtin_io(ff_builtin_io *io, int64_t offset, int origin)
++{
++    if (!io) {
++        return 0;
++    }
++
++    if (io->offset == offset && origin == SEEK_SET) {
++        io->last_read = offset;
++        return offset;
++    }
++
++    av_application_will_http_seek(io->app_ctx, (void *)io->url_context,
++                                  io->url_context->filename, offset);
++
++    int64_t pos =
++        io->url_context->prot->url_seek(io->url_context, offset, origin);
++    if (pos < 0) {
++        av_application_did_http_seek(io->app_ctx, (void *)io->url_context,
++                                     io->url_context->filename, offset,
++                                     AVERROR(errno), 500);
++        return AVERROR(errno);
++    }
++    io->last_read = pos;
++    io->offset = pos;
++    av_application_did_http_seek(io->app_ctx, (void *)io->url_context,
++                                 io->url_context->filename, offset, 0, 200);
++    return pos;
++}
++
++static int write_builtin_io(ff_builtin_io *io, uint8_t *buf, int buf_size)
++{
++    if (!io) {
++        return 0;
++    }
++
++    return io->url_context->prot->url_write(io->url_context, buf, buf_size);
++}
++
++static int read_builtin_io(ff_builtin_io *io, uint8_t *buf, int buf_size,
++                           int64_t pos)
++{
++    if (!io) {
++        return 0;
++    }
++
++    uint8_t *buf1 = buf;
++    int buf_size1 = buf_size;
++    int read = 0;
++
++    seek_builtin_io(io, pos, SEEK_SET);
++
++    while (buf_size1 > 0) {
++        read =
++            io->url_context->prot->url_read(io->url_context, buf1, buf_size1);
++        if (read <= 0) {
++            // maybe AVERROR_EOF
++            break;
++        }
++        io->offset += read;
++        buf1 += read;
++        buf_size1 -= read;
++    }
++    if (read == AVERROR_EXIT) {
++        return AVERROR_EXIT;
++    }
++    int bytes = buf_size - buf_size1;
++    if (bytes == 0 && read == AVERROR_EOF) {
++        return AVERROR_EOF;
++    } else {
++        av_application_did_io_tcp_read(io->app_ctx, (void *)io->url_context,
++                                       bytes);
++        return bytes;
++    }
++}
++
++static int read_builtin_io_from_cache(ff_builtin_io *io, void *buf,
++                                      int buf_size, int64_t pos)
++{
++    if (!io) {
++        return -1;
++    }
++
++    if (!io->cache) {
++        return read_builtin_io(io, buf, buf_size, pos);
++    }
++
++    io->sum++;
++    DLinkedNode *cached = lRUCacheGet(io->cache, pos, buf_size);
++    if (cached) {
++        uint8_t *src = cached->buffer + (pos - cached->offset);
++        memcpy(buf, src, buf_size);
++        io->hit_count++;
++        av_log(NULL, AV_LOG_DEBUG, "[bluray] hit cache %lld,rate:%0.2f,%d,%d",
++               pos, 1.0 * io->hit_count / io->sum, io->hit_count, io->sum);
++        return buf_size;
++    }
++
++    int tmp_buffer_size = io->cache_buff_size;
++    uint8_t *tmp_buffer = av_malloc(tmp_buffer_size);
++
++    int bytes = read_builtin_io(io, tmp_buffer, tmp_buffer_size, pos);
++
++#define MIN(a, b) (((a) < (b)) ? a : b)
++    if (bytes > 0) {
++        lRUCachePut(io->cache, pos, tmp_buffer, bytes);
++        bytes = MIN(buf_size, bytes);
++        memcpy(buf, tmp_buffer, bytes);
++    }
++    return bytes;
++}
++
++static int read_blocks(void *fs_handle, void *buf, int lba, int num_blocks)
++{
++    ff_bluray_access *access = fs_handle;
++    if (access->cancel == 1) {
++        return AVERROR_EXIT;
++    }
++
++    ff_builtin_io *io = access->io;
++    if (!io) {
++        return -1;
++    }
++    int got = -1;
++    int64_t pos = (int64_t)lba * UDF_BLOCK_SIZE;
++    int buf_size = num_blocks * UDF_BLOCK_SIZE;
++    int use_cache = io->allow_cache && (buf_size < 512 * 1024); // && (num_blocks == 1);
++
++    if (use_cache) {
++        if (!io->cache) {
++            io->cache_buff_size = 512 * 1024;
++            io->cache = lRUCacheCreate(3);
++        }
++    } else {
++        if (io->cache) {
++            lRUCacheFree(io->cache);
++            io->cache = NULL;
++        }
++    }
++    int bytes = read_builtin_io_from_cache(io, buf, buf_size, pos);
++    if (bytes == AVERROR_EXIT) {
++        access->cancel = 1;
++        return AVERROR_EXIT;
++    }
++
++    if (bytes > 0) {
++        got = (int)(bytes / UDF_BLOCK_SIZE);
++    }
++    return got;
++}
++
++void destroy_bluray_custom_access(fs_access **p)
++{
++    if (p) {
++        fs_access *access = *p;
++        if (access) {
++            ff_bluray_access *ba = access->fs_handle;
++            ff_builtin_io *io = ba->io;
++            if (io) {
++                close_builtin_io(io);
++                av_freep(&io);
++            }
++            av_free(ba->url);
++            av_dict_free(&ba->opts);
++        }
++        av_freep(p);
++    }
++}
++
++// -------------------------------------------------------------------------------------------
++// open_file for bdmv
++
++static void _file_close(BD_FILE_H *file)
++{
++    if (file) {
++        ff_builtin_io *io = file->internal;
++        if (io) {
++            close_builtin_io(io);
++            av_free(io);
++            file->internal = NULL;
++        }
++        av_freep(&file);
++    }
++}
++
++static int64_t _file_read(BD_FILE_H *file, uint8_t *buf, int64_t size)
++{
++    if (size <= 0) {
++        return 0;
++    }
++    ff_builtin_io *io = file->internal;
++    if (!io) {
++        return -1;
++    }
++
++    int read = read_builtin_io_from_cache(io, buf, size, io->last_read);
++
++    if (read > 0) {
++        io->last_read += read;
++    }
++
++    return read;
++}
++
++static int64_t _file_write(BD_FILE_H *file, const uint8_t *buf, int64_t size)
++{
++    if (size <= 0) {
++        return 0;
++    }
++    ff_builtin_io *io = file->internal;
++    if (!io) {
++        return -1;
++    }
++    return write_builtin_io(io, buf, size);
++}
++
++// origin: SEEK_SET, SEEK_CUR or SEEK_END
++static int64_t _file_seek(BD_FILE_H *file, int64_t offset, int32_t origin)
++{
++    ff_builtin_io *io = file->internal;
++    if (!io) {
++        return -1;
++    }
++    return seek_builtin_io(io, offset, origin);
++}
++
++static int64_t _file_tell(BD_FILE_H *file)
++{
++    ff_builtin_io *io = file->internal;
++    if (!io) {
++        return -1;
++    }
++    return io->last_read;
++    // return seek_builtin_io(io, 0, SEEK_CUR);
++}
++
++static struct bd_file_s *open_file(void *fs_handle, const char *rel_path)
++{
++    ff_bluray_access *access = fs_handle;
++
++    if (access->cancel == 1) {
++        return NULL;
++    }
++
++    const char *url = av_append_path_component(access->url, rel_path);
++    if (!url) {
++        return NULL;
++    }
++    AVDictionary *opts = NULL;
++    av_dict_copy(&opts, access->opts, 0);
++
++    ff_builtin_io *io = NULL;
++    int ret = create_builtin_io(&io, url, &opts, 0, access->int_cb);
++    av_dict_free(&opts);
++
++    if (0 != ret) {
++        av_log(NULL, AV_LOG_ERROR, "[bluray] can't open %s,error:%s", url,
++               av_err2str(ret));
++        av_free(url);
++        return NULL;
++    }
++    av_free(url);
++    BD_FILE_H *file = av_malloc(sizeof(BD_FILE_H));
++    if (!file) {
++        close_builtin_io(io);
++        av_free(io);
++        return NULL;
++    }
++
++    if (io->allow_cache && !io->cache) {
++        int is_video = strstr(rel_path, ".m2ts") != NULL;
++        int c = is_video ? 3 : 1;
++        io->cache_buff_size = is_video ? 1024 * 1024 : 64 * 1024;
++        io->cache = lRUCacheCreate(c);
++    }
++
++    file->internal = io;
++    file->close = _file_close;
++    file->seek = _file_seek;
++    file->read = _file_read;
++    file->write = _file_write;
++    file->tell = _file_tell;
++
++    return file;
++}
++
++// open_dir for bdmv
++static void _dir_close(BD_DIR_H *dir)
++{
++    if (dir) {
++        ff_builtin_io *io = dir->internal;
++        if (!io) {
++            return;
++        }
++        close_builtin_io(io);
++        av_free(io);
++        dir->internal = NULL;
++        av_freep(&dir);
++    }
++}
++
++static int _dir_read(BD_DIR_H *dir, BD_DIRENT *entry)
++{
++    ff_builtin_io *io = dir->internal;
++    if (!io) {
++        return -1;
++    }
++
++    AVIODirEntry *next = NULL;
++
++    if (io->url_context->prot->url_read_dir(io->url_context, &next) < 0 ||
++        !next) {
++        return -2;
++    }
++
++    strncpy(entry->d_name, next->name, sizeof(entry->d_name));
++    entry->d_name[sizeof(entry->d_name) - 1] = 0;
++
++    return 0;
++}
++
++static struct bd_dir_s *open_dir(void *fs_handle, const char *rel_path)
++{
++    ff_bluray_access *access = fs_handle;
++
++    if (access->cancel == 1) {
++        return NULL;
++    }
++
++    char *url = NULL;
++    url = av_append_path_component(access->url, rel_path);
++    if (!url) {
++        return NULL;
++    }
++    AVDictionary *opts = NULL;
++    av_dict_copy(&opts, access->opts, 0);
++
++    ff_builtin_io *io = NULL;
++    int ret = create_builtin_io(&io, url, &opts, 1, access->int_cb);
++    av_dict_free(&opts);
++    av_free(url);
++
++    if (0 != ret) {
++        av_log(NULL, AV_LOG_ERROR, "[bluray] can't open dir %s,error:%s", url,
++               av_err2str(ret));
++        return NULL;
++    }
++
++    BD_DIR_H *dir = av_malloc(sizeof(BD_DIR_H));
++    if (!dir) {
++        close_builtin_io(io);
++        av_free(io);
++        return NULL;
++    }
++
++    dir->internal = io;
++    dir->close = _dir_close;
++    dir->read = _dir_read;
++
++    return dir;
++}
++
++int is_bluray_custom_access_cancelled(fs_access *access)
++{
++    if (!access) {
++        return 0;
++    }
++
++    ff_bluray_access *opaque = access->fs_handle;
++    return opaque->cancel;
++}
++
++// 构建fs_access结构体
++fs_access *create_bluray_custom_access(const char *url, AVDictionary **options,
++                                       const AVIOInterruptCB *int_cb)
++{
++    ff_bluray_access *opaque = av_mallocz(sizeof(ff_bluray_access));
++    if (!opaque) {
++        return NULL;
++    }
++
++    if (opaque) {
++        opaque->url = av_strdup(url);
++        if (options) {
++            av_dict_copy(&opaque->opts, *options, 0);
++        }
++        opaque->int_cb = int_cb;
++        int ret = create_builtin_io(&opaque->io, url, options, 0, int_cb);
++        if (0 != ret) {
++            av_log(NULL, AV_LOG_ERROR, "[bluray] can't open file %s,error:%s",
++                   url, av_err2str(ret));
++        }
++
++        fs_access *access = av_malloc(sizeof(fs_access));
++        access->fs_handle = opaque;
++        access->read_blocks = read_blocks;
++        access->open_file = open_file;
++        access->open_dir = open_dir;
++
++        return access;
++    }
++    return NULL;
++}
+diff --git a/libavformat/bluray_custom_fs.h b/libavformat/bluray_custom_fs.h
+new file mode 100644
+index 0000000..5ee69c8
+--- /dev/null
++++ b/libavformat/bluray_custom_fs.h
+@@ -0,0 +1,33 @@
++//
++//  bluray_custom_fs.h
++//
++//  Created by Reach Matt on 2024/9/13.
++//
++//
++// Copyright (C) 2021 Matt Reach<qianlongxu@gmail.com>//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//      http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++#ifndef bluray_custom_fs_h
++#define bluray_custom_fs_h
++
++#include <stdio.h>
++
++typedef struct fs_access fs_access;
++typedef struct AVDictionary AVDictionary;
++typedef struct AVIOInterruptCB AVIOInterruptCB;
++
++void destroy_bluray_custom_access(fs_access **p);
++int is_bluray_custom_access_cancelled(fs_access *access);
++fs_access *create_bluray_custom_access(const char *url, AVDictionary **options,
++                                       const AVIOInterruptCB *int_cb);
++#endif /* bluray_custom_fs_smb2_h */
+diff --git a/libavformat/lrucache.c b/libavformat/lrucache.c
+new file mode 100644
+index 0000000..ea7930b
+--- /dev/null
++++ b/libavformat/lrucache.c
+@@ -0,0 +1,112 @@
++#include "lrucache.h"
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++// 定义 LRU 缓存结构
++typedef struct LRUCache {
++    int capacity;
++    int size;
++    DLinkedNode *head;
++    DLinkedNode *tail;
++} LRUCache;
++
++// 创建新的双向链表节点
++static DLinkedNode *newDLinkedNode(int64_t offset, uint8_t *buffer, int64_t buffer_size)
++{
++    DLinkedNode *node = (DLinkedNode *)malloc(sizeof(DLinkedNode));
++    node->offset = offset;
++    node->buffer = buffer;
++    node->buffer_size = buffer_size;
++    node->prev = NULL;
++    node->next = NULL;
++    return node;
++}
++
++// 创建 LRU 缓存
++LRUCache *lRUCacheCreate(int capacity)
++{
++    LRUCache *cache = (LRUCache *)malloc(sizeof(LRUCache));
++    cache->capacity = capacity;
++    cache->size = 0;
++    cache->head = newDLinkedNode(0, NULL, 0);
++    cache->tail = newDLinkedNode(0, NULL, 0);
++    cache->head->next = cache->tail;
++    cache->tail->prev = cache->head;
++    return cache;
++}
++
++// 将节点移动到链表头部
++static void moveToHead(LRUCache *obj, DLinkedNode *node)
++{
++    if (node->prev) {
++        node->prev->next = node->next;
++    }
++    if (node->next) {
++        node->next->prev = node->prev;
++    }
++
++    node->next = obj->head->next;
++    node->prev = obj->head;
++    obj->head->next->prev = node;
++    obj->head->next = node;
++}
++
++// 删除链表尾部节点
++static void removeTail(LRUCache *obj)
++{
++    DLinkedNode *removed = obj->tail->prev;
++    removed->prev->next = obj->tail;
++    obj->tail->prev = removed->prev;
++    free(removed->buffer);
++    free(removed);
++    obj->size--;
++}
++
++// 获取缓存中的节点
++DLinkedNode *lRUCacheGet(LRUCache *obj, int64_t offset, int64_t size)
++{
++    DLinkedNode *current = obj->head->next;
++    while (current != obj->tail) {
++        if ((current->offset <= offset) &&
++            (current->offset + current->buffer_size >= offset + size)) {
++            moveToHead(obj, current);
++            return current;
++        }
++        current = current->next;
++    }
++    return NULL;
++}
++
++// 向缓存中插入键值对
++void lRUCachePut(LRUCache *obj, int64_t offset, uint8_t *buffer, int64_t buffer_size)
++{
++    DLinkedNode *current = obj->head->next;
++
++    if (obj->size == obj->capacity) {
++        removeTail(obj);
++    }
++
++    DLinkedNode *newNode = newDLinkedNode(offset, buffer, buffer_size);
++    newNode->next = obj->head->next;
++    newNode->prev = obj->head;
++    obj->head->next->prev = newNode;
++    obj->head->next = newNode;
++    obj->size++;
++}
++
++// 释放 LRU 缓存的内存
++void lRUCacheFree(LRUCache *obj)
++{
++    DLinkedNode *current = obj->head;
++    while (current != NULL) {
++        DLinkedNode *next = current->next;
++        if (current->buffer) {
++            free(current->buffer);
++        }
++        free(current);
++        current = next;
++    }
++    free(obj);
++}
+diff --git a/libavformat/lrucache.h b/libavformat/lrucache.h
+new file mode 100644
+index 0000000..38c6447
+--- /dev/null
++++ b/libavformat/lrucache.h
+@@ -0,0 +1,30 @@
++#ifndef LRU_CACHE_H
++#define LRU_CACHE_H
++
++#include <stdint.h>
++
++// 定义双向链表节点结构
++typedef struct DLinkedNode {
++    int64_t offset;
++    uint8_t *buffer;
++    int64_t buffer_size;
++    struct DLinkedNode *prev;
++    struct DLinkedNode *next;
++} DLinkedNode;
++
++// 前向声明，不暴露具体结构
++typedef struct LRUCache LRUCache;
++
++// 创建 LRU 缓存
++LRUCache *lRUCacheCreate(int capacity);
++
++// 获取缓存中的节点
++DLinkedNode *lRUCacheGet(LRUCache *obj, int64_t offset, int64_t size);
++
++// 向缓存中插入键值对
++void lRUCachePut(LRUCache *obj, int64_t offset, uint8_t *buffer, int64_t buffer_size);
++
++// 释放 LRU 缓存的内存
++void lRUCacheFree(LRUCache *obj);
++
++#endif
+\ No newline at end of file
+-- 
+2.39.5 (Apple Git-154)
+

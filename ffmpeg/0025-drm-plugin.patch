@@ -1,0 +1,634 @@
+From eb279b6cd2bdef4a17b698653116ed0ed1a01a6c Mon Sep 17 00:00:00 2001
+From: junjunfang200924 <junjunfang200924@sohu-inc.com>
+Date: Sun, 8 Oct 2023 17:17:14 +0800
+Subject: [PATCH] drm plugin
+
+---
+ libavformat/Makefile     |   1 +
+ libavformat/drm_plugin.c | 585 +++++++++++++++++++++++++++++++++++++++
+ libavformat/protocols.c  |   1 +
+ 3 files changed, 587 insertions(+)
+ create mode 100644 libavformat/drm_plugin.c
+
+diff --git a/libavformat/Makefile b/libavformat/Makefile
+index 7ca68a7036..c4a05c670d
+--- a/libavformat/Makefile
++++ b/libavformat/Makefile
+@@ -670,6 +670,7 @@ OBJS-$(CONFIG_CONCAT_PROTOCOL)           += concat.o
+ OBJS-$(CONFIG_CONCATF_PROTOCOL)          += concat.o
+ OBJS-$(CONFIG_CRYPTO_PROTOCOL)           += crypto.o
+ OBJS-$(CONFIG_DATA_PROTOCOL)             += data_uri.o
++OBJS-$(CONFIG_DRM_PROTOCOL)              += drm_plugin.o
+ OBJS-$(CONFIG_FFRTMPCRYPT_PROTOCOL)      += rtmpcrypt.o rtmpdigest.o rtmpdh.o
+ OBJS-$(CONFIG_FFRTMPHTTP_PROTOCOL)       += rtmphttp.o
+ OBJS-$(CONFIG_FILE_PROTOCOL)             += file.o
+diff --git a/libavformat/drm_plugin.c b/libavformat/drm_plugin.c
+new file mode 100644
+index 0000000000..d02882544f
+--- /dev/null
++++ b/libavformat/drm_plugin.c
+@@ -0,0 +1,589 @@
++
++#include "libavutil/avstring.h"
++#include "libavutil/internal.h"
++#include "libavutil/opt.h"
++#include "avformat.h"
++#if HAVE_DIRENT_H
++#include <dirent.h>
++#endif
++#include <fcntl.h>
++#if HAVE_IO_H
++#include <io.h>
++#endif
++#if HAVE_UNISTD_H
++#include <unistd.h>
++#endif
++#include <sys/stat.h>
++#include <stdlib.h>
++#include <pthread.h>
++#include <stdbool.h>
++
++#include "os_support.h"
++#include "url.h"
++#include "beenet/interface.h"
++#include "json.h"
++
++typedef void(*CallbackDrmLogger)(const char* pri, const char* name, const char* message);
++
++typedef void(*CallBackStreamMessage)(void* opaque, int type, void* userp);
++typedef void(*CallBackStreamRead)(void* opaque, const void* buffer, size_t length);
++
++/* standard file protocol */
++
++typedef struct DrmStreamContext {
++    const AVClass *class;
++    int fd;
++    int len;
++    int offset;
++    int seek_pos;
++    int blocksize;
++    int error;
++    bool abort;
++    volatile int close;
++
++    void* buff;
++    CallBackStreamMessage   cb_stream_message;
++
++    pthread_mutex_t mutex;
++    pthread_mutex_t cond;
++} DrmStreamContext;
++
++static const AVOption drm_stream_options[] = {
++    { "blocksize", "set I/O operation maximum block size", offsetof(DrmStreamContext, blocksize), AV_OPT_TYPE_INT, { .i64 = INT_MAX }, 1, INT_MAX, AV_OPT_FLAG_ENCODING_PARAM },
++    { NULL }
++};
++
++
++static const AVClass drm_stream_class = {
++    .class_name = "SohuDrm",
++    .item_name  = av_default_item_name,
++    .option     = drm_stream_options,
++    .version    = LIBAVUTIL_VERSION_INT,
++};
++
++enum  EDrmStreamMessageType
++{
++    Open = 0,
++    Ready = 1,
++    Error = 2,
++    Close = 3,
++};
++
++const char* online_key = "{\"player\":\"SOHUPLAYER\"}";
++
++#ifdef DRM_ASYNC_STREAM
++static void callback_drm_message(void* opaque, int type, void* userp)
++{
++    DrmStreamContext* c = (DrmStreamContext*)opaque;
++    switch ((enum EDrmStreamMessageType)type) {
++        case Open: {
++            char* str = (char*)userp;
++            if (NULL == str) {
++                break;
++            }
++
++            struct json_object* root = json_tokener_parse(str);
++            if (root) {
++                struct json_object* obj = json_object_object_get(root, "filesize");
++                if (obj) {
++                    c->len = json_object_get_int64(obj);
++                }
++            }
++            pthread_mutex_lock(&c->mutex);
++            pthread_cond_signal(&c->cond);
++            pthread_mutex_unlock(&c->mutex);
++        }
++            break;
++        case Ready: {
++            pthread_mutex_lock(&c->mutex);
++            pthread_cond_signal(&c->cond);
++            pthread_mutex_unlock(&c->mutex);
++        }
++            break;
++        case Error: {
++            pthread_mutex_lock(&c->mutex);
++            c->error = true;
++            pthread_cond_signal(&c->cond);
++            pthread_mutex_unlock(&c->mutex);
++        }
++            break;
++        case Close: {
++            bool has_error = *(bool*)userp;
++            pthread_mutex_lock(&c->mutex);
++            c->error = has_error;
++            pthread_cond_signal(&c->cond);
++            pthread_mutex_unlock(&c->mutex);
++        }
++            break;
++        default:
++            break;
++    }
++}
++
++static void on_error(int error, void* userp)
++{
++    DrmStreamContext* c = (DrmStreamContext*)userp;
++    c->offset = 0;
++    c->blocksize = 0;
++
++    if (error < -65536) {
++        int tmp = -error;
++        fprintf(stderr, "xxxx(%d) error:%.*s\n", c->fd, 4, (const char*)&tmp);
++    } else {
++        fprintf(stderr, "xxxx(%) error code:%d\n", c->fd, error);
++    }
++
++    if(c->cb_stream_message) {
++        c->cb_stream_message(c, 2, NULL);
++    }
++
++    bee_close(c->fd);
++}
++
++static void on_close(int error, void* userp)
++{
++    DrmStreamContext* c = (DrmStreamContext*)userp;
++    char code[8] = {0};
++    if (error < -65536) {
++        int tmp = -error;
++        fprintf(stderr, "xxxx(%d) error:%.*s\n", c->fd, 4, (const char*)&tmp);
++        memcpy(code, &tmp, 4);
++    } else {
++        fprintf(stderr, "xxxx(%) error code:%d\n", c->fd, error);
++    }
++
++    bool is_error = strcmp(code, "EFIN") == 0? false:true;
++    if(c->cb_stream_message) {
++        c->cb_stream_message(c, 3, &is_error);
++    }
++}
++
++static void async_stream_close(DrmStreamContext* c)
++{
++    if (c->fd < 0) {
++        return;
++    }
++    c->close = true;
++    bee_close_async(c->fd, on_close, c);
++}
++
++static void on_stat(const void* buffer, int length, void* userp)
++{
++    DrmStreamContext* c = (DrmStreamContext*)userp;
++    if (c->close) {
++        return;
++    }
++
++    if (NULL != buffer && length > 0) {
++        if (c->cb_stream_message) {
++            c->cb_stream_message(c, 0, buffer);
++        }
++    } else {
++        on_error(length, c);
++    }
++}
++
++static size_t on_recv(const void* buffer, size_t length, void* userp)
++{
++    DrmStreamContext* c = (DrmStreamContext*)userp;
++    size_t bytes = 0;
++
++    if (c->close) {
++        return bytes;
++    }
++
++    if (NULL == buffer) {
++        if (0 != length) {
++            on_error(length, c);
++        }
++    } else {
++        if (c->blocksize > 0)  {
++            pthread_mutex_lock(&c->mutex);
++
++            int len = length < c->blocksize ? length : c->blocksize;
++            memcpy(c->buff, buffer, len);
++            c->offset += len;
++            bytes = len;
++            c->blocksize = 0;
++
++            pthread_mutex_unlock(&c->mutex);
++
++            pthread_cond_signal(&c->cond);
++        }
++    }
++
++    return bytes;
++}
++
++static void on_open(int fd, void* userp)
++{
++    DrmStreamContext* c = (DrmStreamContext*)userp;
++    if (c->close) {
++        return;
++    }
++
++    c->fd = fd;
++    bee_stat_async(fd, on_stat, c);
++}
++
++static void on_seek(long offset, void* userp)
++{
++    DrmStreamContext* c = (DrmStreamContext*)userp;
++    if (offset < 0) {
++        on_error(offset, c);
++    }
++
++    if (c->close) {
++        return;
++    }
++
++    c->offset = offset;
++    if (c->offset == 0) {
++        if (c->cb_stream_message) {
++            c->cb_stream_message(c, 1, NULL);
++        }
++    }
++
++    if (c->blocksize > 0) {
++        bee_read_async(c->fd, c->blocksize, on_recv, c);
++    }
++}
++
++static  void async_stream_open(const char* url, DrmStreamContext* c, CallBackStreamMessage cb_message)
++{
++    if (c->fd > 0) {
++        on_error(-EEXIST, c);
++        return;
++    }
++
++    c->close = false;
++    c->error = 0;
++    c->seek_pos = -1;
++    c->cb_stream_message = cb_message;
++
++    bee_open_async(url, online_key, on_open, c);
++}
++
++static void async_stream_read(DrmStreamContext* c, size_t offset, unsigned char* buff, int len)
++{
++    if (c->fd < 0) {
++        on_error(-EBADF, c);
++        return;
++    }
++
++    if (len < 0 || offset < 0) {
++        return;
++    }
++
++    c->buff = (void*)buff;
++    if (c->offset != offset) {
++        bee_seek_async(c->fd, offset, SEEK_SET, on_seek, c);
++    } else {
++        bee_read_async(c->fd, len, on_recv, c);
++    }
++}
++
++#endif
++
++
++static void init_drm_sdk(int level, CallbackDrmLogger logger)
++{
++    bee_logger_init(level, logger);
++}
++
++static void uninit_drm_sdk()
++{
++    bee_env_cleanup();
++}
++
++static void callback_stream_close(int error, void* userp)
++{
++    DrmStreamContext* c =(DrmStreamContext*)userp;
++    c->fd = 0;
++}
++
++static int sync_stream_close(DrmStreamContext* c)
++{
++    c->abort = true;
++    int result = 0;
++    if (c->fd > 0) {
++        bee_close(c->fd);
++    }
++    c->fd = 0;
++    return result;
++}
++
++static void sync_stream_close2(DrmStreamContext* c)
++{
++    c->abort = true;
++    if(c->fd > 0) {
++        bee_close_async(c->fd, on_close, c);
++    }
++}
++
++static int sync_stream_open( DrmStreamContext* c, const char* url)
++{
++    sync_stream_close2(c);
++
++    c->seek_pos = -1;
++    c->fd = bee_open(url, online_key);
++    if (c->fd < 0) {
++        c->fd = 0;
++        return -1;
++    }
++    c->abort = false;
++    return 0;
++}
++
++static char* sync_stream_check_response(DrmStreamContext* c)
++{
++    if (c->abort)
++        return NULL;
++    const int buff_len = 1024;
++    char* buffer = (char*)malloc(buff_len);
++    int len = bee_stat(c->fd, buffer, buff_len);
++    if(len > 0 && (size_t)len <= buff_len) {
++        buffer[len] = '\0';
++        return buffer;
++    }
++
++    return NULL;
++}
++
++static ssize_t sync_stream_read(DrmStreamContext* c, size_t offset, unsigned char *buffer, int len)
++{
++    if (c->abort) return 0;
++    if (c->offset != offset) {
++        off_t ret = bee_seek(c->fd, offset, SEEK_SET);
++        if (ret != offset)
++            return -1;
++    }
++
++    ssize_t bytes = bee_read(c->fd, buffer, len);
++    c->offset += bytes;
++    return bytes;
++}
++
++static void set_uid(const char* uid)
++{
++    char str_uid_json[128] = {0};
++    sprintf(str_uid_json, "{\"uid\":\"%s\"}", uid);
++
++    bee_env_init(str_uid_json);
++}
++
++
++static int drm_stream_open(URLContext *h, const char *filename, int flags)
++{
++    DrmStreamContext *c = h->priv_data;
++
++    struct json_object* root = json_tokener_parse(filename+sizeof("SohuDrm://")-1);
++    struct json_object* obj = NULL;
++
++    char* app_version = NULL;
++    char* device_id = NULL;
++    char* path = NULL;
++    char* mkey = NULL;
++    char* uid = NULL;
++
++    int plat_form = 0;
++    int vid = 0;
++    int tvid = 0;
++
++    if (root) {
++        obj = json_object_object_get(root, "appVersion");
++        if (obj) {
++            app_version = json_object_get_string(obj);
++        }
++        obj = json_object_object_get(root, "deviceId");
++        if (obj) {
++            device_id = json_object_get_string(obj);
++        }
++        obj = json_object_object_get(root, "path");
++        if (obj) {
++            path = json_object_get_string(obj);
++        }
++        obj = json_object_object_get(root, "mkey");
++        if (obj) {
++            mkey = json_object_get_string(obj);
++        }
++        obj = json_object_object_get(root, "uid");
++        if (obj) {
++            uid = json_object_get_string(obj);
++        }
++        obj = json_object_object_get(root, "platForm");
++        if (obj) {
++            plat_form = json_object_get_int64(obj);
++        }
++        obj = json_object_object_get(root, "vid");
++        if (obj) {
++            vid = json_object_get_int64(obj);
++        }
++        obj = json_object_object_get(root, "tvid");
++        if (obj) {
++            tvid = json_object_get_int64(obj);
++        }
++    }
++
++    if (path == NULL && (vid == 0 || tvid == 0)) {
++        return -1;
++    }
++
++#ifdef _DEBUG
++    init_drm_sdk(9, NULL);
++#else
++    init_drm_sdk(-1, NULL);
++#endif
++    set_uid(uid);
++
++    char* url = "https://hot.vrs.sohu.com/vrs_drm.action?vid=";
++    char url_buffer[1024] = {0};
++    if (mkey == NULL) {
++        snprintf(url_buffer, 1024, "%s%d", url, vid);
++    } else {
++        snprintf(url_buffer, 1024, "%s%d&mkey=%s", url, vid, mkey);
++    }
++#ifdef DRM_ASYNC_STREAM
++    pthread_mutex_init(&c->mutex, NULL);
++    pthread_cond_init(&c->cond, NULL);
++
++    async_stream_open(url_buffer, c, callback_drm_message);
++
++    pthread_mutex_lock(&c->mutex);
++    pthread_cond_wait(&c->cond, &c->mutex);
++    pthread_mutex_unlock(&c->mutex);
++
++    if(c->error) {
++        pthread_cond_destroy(&c->cond);
++        pthread_mutex_destroy(&c->mutex);
++        uninit_drm_sdk();
++        return -1;
++    }
++#else
++    int status = sync_stream_open(c, url_buffer);
++    if (status == -1) {
++        uninit_drm_sdk();
++        return -1;
++    } else {
++        usleep(500*1000);
++
++        char* str = sync_stream_check_response(c);
++        if (!str) {
++            return -1;
++        }
++        struct json_object* root = json_tokener_parse(str);
++        if (root) {
++            struct json_object* obj = json_object_object_get(root, "filesize");
++            if (obj) {
++                c->len = json_object_get_int64(obj);
++            }
++        }
++    }
++#endif
++
++    return 0;
++}
++
++static int64_t drm_stream_seek(URLContext *h, int64_t pos, int whence)
++{
++    DrmStreamContext *c = h->priv_data;
++
++    if (!c->close) {
++        if (whence == AVSEEK_SIZE) {
++            return c->len;
++        } else {
++            c->seek_pos = pos;
++            return pos;
++        }
++    }
++
++    return -1;
++}
++
++const int kDrmStreamBufferLen =  1024 * 1024;
++
++static int drm_stream_read(URLContext *h, unsigned char *buf, int size)
++{
++    DrmStreamContext *c = h->priv_data;
++    if (c->close) {
++        return -1;
++    }
++
++    if (size > kDrmStreamBufferLen) {
++        return -1;
++    }
++
++    if (c->offset + size >= c->len){
++        size = c->len - c->offset;
++    }
++
++    if (size <= 0)
++        return AVERROR_EOF;
++    c->blocksize = size;
++#ifdef DRM_ASYNC_STREAM
++    int pos = c->offset;
++    if (c->seek_pos != -1) {
++        pos = c->seek_pos;
++    }
++
++    pthread_mutex_lock(&c->mutex);
++    async_stream_read(c, pos, buf, size);
++
++    pthread_cond_wait(&c->cond, &c->mutex);
++    pthread_mutex_unlock(&c->mutex);
++
++    if (c->seek_pos != -1) {
++        c->offset = c->seek_pos;
++        c->seek_pos = -1;
++    }
++
++    if (c->error || c->close) {
++        return -1;
++    }
++#else
++    int pos = c->offset;
++    if (c->seek_pos != -1) {
++        pos = c->seek_pos;
++    }
++    int read_len = sync_stream_read(c, pos,  buf, size);
++    if (read_len != size) {
++        return -1;
++    }
++    if (c->seek_pos != -1) {
++        c->offset = c->seek_pos;
++        c->seek_pos = -1;
++    }
++    c->offset += size;
++#endif
++
++    return size;
++}
++
++static int drm_stream_close(URLContext *h)
++{
++    DrmStreamContext *c = h->priv_data;
++    c->close = true;
++
++#ifdef DRM_ASYNC_STREAM
++    sync_stream_close2(c);
++#else
++    async_stream_close(c);
++#endif
++    uninit_drm_sdk(c);
++
++    return  0;
++}
++
++
++const URLProtocol ff_drm_protocol = {
++    .name                = "SohuDrm",
++    .url_open            = drm_stream_open,
++    .url_read            = drm_stream_read,
++    .url_seek            = drm_stream_seek,
++    .url_close           = drm_stream_close,
++    .priv_data_size      = sizeof(DrmStreamContext),
++    .priv_data_class     = &drm_stream_class,
++    .default_whitelist   = "SohuDrm"
++};
++
++
+diff --git a/libavformat/protocols.c b/libavformat/protocols.c
+index 93a6d67261..08c30e0c39
+--- a/libavformat/protocols.c
++++ b/libavformat/protocols.c
+@@ -78,6 +78,7 @@ extern const URLProtocol ff_libsmbclient_protocol;
+ extern const URLProtocol ff_libzmq_protocol;
+ extern const URLProtocol ff_ipfs_gateway_protocol;
+ extern const URLProtocol ff_ipns_gateway_protocol;
++extern const URLProtocol ff_drm_protocol;
+
+ #include "libavformat/protocol_list.c"
+
+-- 
+2.42.0
+

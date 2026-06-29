@@ -1,0 +1,16 @@
+diff --git a/src/dvdread/dvd_reader.h b/src/dvdread/dvd_reader.h
+index 54ef5dd..f731132 100644
+--- a/src/dvdread/dvd_reader.h
++++ b/src/dvdread/dvd_reader.h
+@@ -46,6 +46,11 @@
+  */
+ #include "version.h"
+ 
++#if defined(_MSC_VER)
++#include <basetsd.h>
++typedef SSIZE_T ssize_t;
++#endif
++
+ /**
+  * The length of one Logical Block of a DVD.
+  */

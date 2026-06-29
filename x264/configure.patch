@@ -1,0 +1,13 @@
+diff --git a/configure b/configure
+index e242e73..e99dbcd 100755
+--- a/configure
++++ b/configure
+@@ -387,7 +387,7 @@ strip="no"
+ pic="no"
+ bit_depth="all"
+ chroma_format="all"
+-compiler="GNU"
++compiler="CL"
+ compiler_style="GNU"
+ opencl="yes"
+ vsx="auto"

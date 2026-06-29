@@ -1,0 +1,130 @@
+From 609126eb64281219927ec1d88ef4d0add68bfcb1 Mon Sep 17 00:00:00 2001
+From: "U-SOHU-INC\\ifox-dev" <ifox-dev@DESKTOP-CKSHSON.sohu-inc.com>
+Date: Wed, 23 Oct 2024 11:27:10 +0800
+Subject: [PATCH] bluray use _wsopen, read, lseek eg function operate file
+
+---
+ src/file/file_win32.c | 52 +++++++++++++++++++++----------------------
+ 1 file changed, 26 insertions(+), 26 deletions(-)
+
+diff --git a/src/file/file_win32.c b/src/file/file_win32.c
+index 5ad04e3..eb728ec 100644
+--- a/src/file/file_win32.c
++++ b/src/file/file_win32.c
+@@ -34,13 +34,25 @@
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <inttypes.h>
++#include <io.h>
++#include <sys/stat.h>
++#include <fcntl.h>
+ 
+ #include <windows.h>
+ 
++/* Some systems may not have S_ISFIFO */
++#ifndef S_ISFIFO
++#  ifdef S_IFIFO
++#    define S_ISFIFO(m) (((m) & S_IFMT) == S_IFIFO)
++#  else
++#    define S_ISFIFO(m) 0
++#  endif
++#endif
++
+ static void _file_close(BD_FILE_H *file)
+ {
+     if (file) {
+-        if (fclose((FILE *)file->internal)) {
++        if (close((int)file->internal) == -1) {
+             BD_DEBUG(DBG_FILE | DBG_CRIT, "Error closing WIN32 file (%p)\n", (void*)file);
+         }
+ 
+@@ -52,20 +64,16 @@ static void _file_close(BD_FILE_H *file)
+ 
+ static int64_t _file_seek(BD_FILE_H *file, int64_t offset, int32_t origin)
+ {
+-#if defined(__MINGW32__)
+-    return fseeko64((FILE *)file->internal, offset, origin);
+-#else
+-    return _fseeki64((FILE *)file->internal, offset, origin);
+-#endif
++    int64_t ret = (int64_t)lseek((int)file->internal, offset+origin, 0x20000);
++
++    return ret;
+ }
+ 
+ static int64_t _file_tell(BD_FILE_H *file)
+ {
+-#if defined(__MINGW32__)
+-    return ftello64((FILE *)file->internal);
+-#else
+-    return _ftelli64((FILE *)file->internal);
+-#endif
++    struct stat st;
++    int64_t ret = (int64_t)fstat((int)file->internal, &st);
++    return ret < 0 ? ret : (S_ISFIFO(st.st_mode) ? 0 : st.st_size);
+ }
+ 
+ #if 0
+@@ -78,7 +86,7 @@ static int _file_eof(BD_FILE_H *file)
+ static int64_t _file_read(BD_FILE_H *file, uint8_t *buf, int64_t size)
+ {
+     if (size > 0 && size < BD_MAX_SSIZE) {
+-        return (int64_t)fread(buf, 1, (size_t)size, (FILE *)file->internal);
++        return (int64_t)read((int)file->internal, buf, size);
+     }
+ 
+     BD_DEBUG(DBG_FILE | DBG_CRIT, "Ignoring invalid read of size %" PRId64 " (%p)\n", size, (void*)file);
+@@ -88,15 +96,7 @@ static int64_t _file_read(BD_FILE_H *file, uint8_t *buf, int64_t size)
+ static int64_t _file_write(BD_FILE_H *file, const uint8_t *buf, int64_t size)
+ {
+     if (size > 0 && size < BD_MAX_SSIZE) {
+-        return (int64_t)fwrite(buf, 1, (size_t)size, (FILE *)file->internal);
+-    }
+-
+-    if (size == 0) {
+-        if (fflush((FILE *)file->internal)) {
+-            BD_DEBUG(DBG_FILE, "fflush() failed (%p)\n", (void*)file);
+-            return -1;
+-        }
+-        return 0;
++        return (int64_t)write((int)file->internal,buf, (size_t)size);
+     }
+ 
+     BD_DEBUG(DBG_FILE | DBG_CRIT, "Ignoring invalid write of size %" PRId64 " (%p)\n", size, (void*)file);
+@@ -106,7 +106,7 @@ static int64_t _file_write(BD_FILE_H *file, const uint8_t *buf, int64_t size)
+ static BD_FILE_H *_file_open(const char* filename, const char *mode)
+ {
+     BD_FILE_H *file;
+-    FILE *fp;
++    int fd;
+     wchar_t wfilename[MAX_PATH], wmode[8];
+ 
+     if (!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, filename, -1, wfilename, MAX_PATH) ||
+@@ -116,8 +116,8 @@ static BD_FILE_H *_file_open(const char* filename, const char *mode)
+         return NULL;
+     }
+ 
+-    fp = _wfopen(wfilename, wmode);
+-    if (!fp) {
++    fd = _wsopen(wfilename, O_RDONLY, 0x40, 0666);
++    if (fd == -1) {
+         BD_DEBUG(DBG_FILE, "Error opening file %s\n", filename);
+         return NULL;
+     }
+@@ -125,11 +125,11 @@ static BD_FILE_H *_file_open(const char* filename, const char *mode)
+     file = calloc(1, sizeof(BD_FILE_H));
+     if (!file) {
+         BD_DEBUG(DBG_FILE | DBG_CRIT, "Error opening file %s (out of memory)\n", filename);
+-        fclose(fp);
++        close(fd);
+         return NULL;
+     }
+ 
+-    file->internal = fp;
++    file->internal = (void*)(intptr_t)fd;
+     file->close    = _file_close;
+     file->seek     = _file_seek;
+     file->read     = _file_read;
+-- 
+2.42.1
+

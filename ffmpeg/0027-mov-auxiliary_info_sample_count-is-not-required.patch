@@ -1,0 +1,52 @@
+From 4282aa78b59ae43dadd28ff0efd06db3f3b10732 Mon Sep 17 00:00:00 2001
+From: qianlongxu <qianlongxu@gmail.com>
+Date: Fri, 12 Sep 2025 18:01:02 +0800
+Subject: [PATCH] mov auxiliary_info_sample_count is not required
+
+---
+ libavformat/mov.c | 27 +++++++++++++--------------
+ 1 file changed, 13 insertions(+), 14 deletions(-)
+
+diff --git a/libavformat/mov.c b/libavformat/mov.c
+index d9d7b80da2..213287f12d 100644
+--- a/libavformat/mov.c
++++ b/libavformat/mov.c
+@@ -7486,22 +7486,21 @@ static int mov_read_saiz(MOVContext *c, AVIOContext *pb, MOVAtom atom)
+     sample_count = avio_rb32(pb);
+ 
+     if (encryption_index->auxiliary_info_default_size == 0) {
+-        if (sample_count == 0)
+-            return AVERROR_INVALIDDATA;
+-
+-        encryption_index->auxiliary_info_sizes = av_malloc(sample_count);
+-        if (!encryption_index->auxiliary_info_sizes)
+-            return AVERROR(ENOMEM);
++        if (sample_count != 0) {
++            encryption_index->auxiliary_info_sizes = av_malloc(sample_count);
++            if (!encryption_index->auxiliary_info_sizes)
++                return AVERROR(ENOMEM);
+ 
+-        ret = avio_read(pb, encryption_index->auxiliary_info_sizes, sample_count);
+-        if (ret != sample_count) {
+-            av_freep(&encryption_index->auxiliary_info_sizes);
++            ret = avio_read(pb, encryption_index->auxiliary_info_sizes, sample_count);
++            if (ret != sample_count) {
++                av_freep(&encryption_index->auxiliary_info_sizes);
+ 
+-            if (ret >= 0)
+-                ret = AVERROR_INVALIDDATA;
+-            av_log(c->fc, AV_LOG_ERROR, "Failed to read the auxiliary info, %s\n",
+-                   av_err2str(ret));
+-            return ret;
++                if (ret >= 0)
++                    ret = AVERROR_INVALIDDATA;
++                av_log(c->fc, AV_LOG_ERROR, "Failed to read the auxiliary info, %s\n",
++                       av_err2str(ret));
++                return ret;
++            }
+         }
+     }
+     encryption_index->auxiliary_info_sample_count = sample_count;
+-- 
+2.39.5 (Apple Git-154)
+

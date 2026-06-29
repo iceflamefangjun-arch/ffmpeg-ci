@@ -1,0 +1,38 @@
+diff --git a/libavformat/dashdec.c b/libavformat/dashdec.c
+index 2ca91bea8b..7f8ebe1fcd 100644
+--- a/libavformat/dashdec.c
++++ b/libavformat/dashdec.c
+@@ -475,6 +475,9 @@ static char *get_content_url(xmlNodePtr *baseurl_nodes,
+     int i;
+     char *text;
+     char *url = NULL;
++    if (strlen(val) >= max_url_size) {
++        max_url_size += 256;
++    }
+     char *tmp_str = av_mallocz(max_url_size);
+ 
+     if (!tmp_str)
+@@ -493,8 +496,14 @@ static char *get_content_url(xmlNodePtr *baseurl_nodes,
+         }
+     }
+ 
+-    if (val)
++    if (val) {
++        int tmp_max_url_size = strlen(tmp_str) + strlen(val) + 1;
++        if (tmp_max_url_size > max_url_size) {
++            max_url_size = tmp_max_url_size;
++            tmp_str = av_realloc(tmp_str, max_url_size);
++        }
+         ff_make_absolute_url(tmp_str, max_url_size, tmp_str, val);
++    }
+ 
+     if (rep_id_val) {
+         url = av_strireplace(tmp_str, "$RepresentationID$", rep_id_val);
+@@ -1241,6 +1250,7 @@ static int parse_manifest(AVFormatContext *s, const char *url, AVIOContext *in)
+     } else {
+         LIBXML_TEST_VERSION
+ 
++        xmlMemSetup(av_free, av_malloc, av_realloc, av_strdup);
+         doc = xmlReadMemory(buf.str, buf.len, c->base_url, NULL, 0);
+         root_element = xmlDocGetRootElement(doc);
+         node = root_element;

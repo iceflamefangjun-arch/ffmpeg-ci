@@ -1,0 +1,55 @@
+From: Fix macro conflicts for MSVC build
+Date: 2026-03-25
+Subject: [PATCH] Fix printerrf and dprintf macro conflicts for MSVC
+
+This patch fixes the following errors:
+1. printerrf macro redefined - one definition with variadic args, another with single arg
+2. dprintf macro in read_cache.c expects 2 args but called with variable args
+
+---
+ src/dvdnav_internal.h | 9 ++++++---
+ src/read_cache.c      | 2 +-
+ 2 files changed, 7 insertions(+), 4 deletions(-)
+
+diff --git a/src/dvdnav_internal.h b/src/dvdnav_internal.h
+index 0000000..1111111 100644
+--- a/src/dvdnav_internal.h
++++ b/src/dvdnav_internal.h
+@@ -1,6 +1,9 @@
++/* MSVC compatibility - must be at top before any other includes */
++#ifdef _WIN32
+ #define printerrf(...) fprintf(stderr, __VA_ARGS__)
+- 
+ #define dprintf(...) ((void)0)
++#endif
++
+ /**
+  * Copyright (C) 2001. 2002 Billy Biggs <vektor@dumbterm.net>
+  * Copyright (C) 2008 Burkhard Lueck <lueck@hube-lueck.de>
+@@ -239,9 +242,9 @@ struct dvdnav_s {
+ #  define printerr(str) \
+     do { if (this) strncpy(this->err_str, str, MAX_ERR_LEN - 1); } while (0)
+ /* Used in VM commands debugging */
+-#  define printerrf(str) \
++#  define printerrf_noop(str) \
+     do { if (this) strncpy(this->err_str, str, MAX_ERR_LEN - 1); } while (0)
+-#  define dprintf(fmt, str) /* Nowt */
++#  define dprintf_noop(fmt, str) /* Nowt */
+ #else
+ #  define printerr(str)
+ #  define printerrf(str)
+diff --git a/src/read_cache.c b/src/read_cache.c
+index 0000000..1111111 100644
+--- a/src/read_cache.c
++++ b/src/read_cache.c
+@@ -88,7 +88,7 @@ struct read_cache_s {
+ # if READ_CACHE_TRACE
+ #  define dprintf(fmt, args...) fprintf(MSG_OUT, fmt, ## args)
+ # else
+-#  define dprintf(fmt, str) /* Nowt */
++#  define dprintf(fmt, ...) /* Nowt */
+ # endif
+ 
+ /* because of the backwards compat handling in dvdnav_get_next_cache_block */
+-- 
+2.40.0
