@@ -154,7 +154,7 @@ prepend_toolchain_path() {
 configure_msys2_argument_conversion() {
 	[ "${BUILD_HOST}" = "msys2" ] || return 0
 
-	local protect="/nologo;/O;/Od;/O2;/Ob;/MD;/MDd;/MT;/MTd;/D;/D_DEBUG;/DNDEBUG;/Zc:;/bigobj;/utf-8;/GF;/Gy;/Gw;/EHsc;/std:;/Fo;/fo;/Fd;/fd;/Fe;/fe;/Fp;/fp;/FR;/fr;/Fa;/fa;/Fi;/fi;/FI;/FS;/Zi;/Z7;/RTC;/W;/wd;/WX;/GR;/Gd;/GS;/guard:;/machine:;/MACHINE:;/stack:;/STACK:;/safeseh:;/SAFESEH:;/subsystem:;/SUBSYSTEM:;/libpath:;/LIBPATH:;/manifest;/MANIFEST;/manifestuac;/manifestdependency;/manifestfile:;/debug;/DEBUG;/INCREMENTAL;/OPT:;/LTCG;/DLL;/IMPLIB:;/PDB:;/out:;/OUT:;/def:;/DEF:;/nodefaultlib:;/NODEFAULTLIB:"
+	local protect="/nologo;/O;/Od;/O2;/Ob;/MD;/MDd;/MT;/MTd;/D;/D_DEBUG;/DNDEBUG;/Zc:;/bigobj;/utf-8;/GF;/Gy;/Gw;/EH;/std:;/Fo;/fo;/Fd;/fd;/Fe;/fe;/Fp;/fp;/FR;/fr;/Fa;/fa;/Fi;/fi;/FI;/FS;/Zi;/Z7;/RTC;/W;/wd;/WX;/GR;/Gd;/GS;/guard:;/machine:;/MACHINE:;/stack:;/STACK:;/safeseh:;/SAFESEH:;/subsystem:;/SUBSYSTEM:;/libpath:;/LIBPATH:;/manifest;/MANIFEST;/manifestuac;/manifestdependency;/manifestfile:;/debug;/DEBUG;/INCREMENTAL;/OPT:;/LTCG;/DLL;/IMPLIB:;/PDB:;/out:;/OUT:;/def:;/DEF:;/nodefaultlib:;/NODEFAULTLIB:"
 
 	if [ -n "${MSYS2_ARG_CONV_EXCL:-}" ]; then
 		export MSYS2_ARG_CONV_EXCL="${protect};${MSYS2_ARG_CONV_EXCL}"
