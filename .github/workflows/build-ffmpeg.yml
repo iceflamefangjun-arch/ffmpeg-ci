@@ -94,6 +94,9 @@ jobs:
             fi
           }
           disable_info_triggers
+          sudo apt-get -o Dpkg::Use-Pty=0 purge -y install-info || true
+          sudo apt-mark hold install-info || true
+          disable_info_triggers
 
           apt_install() {
             disable_info_triggers
@@ -120,7 +123,7 @@ jobs:
           fi
 
           echo "::group::Install build packages"
-          apt_install git curl zip pkg-config cmake autoconf automake libtool make python3 nasm yasm build-essential
+          apt_install git curl zip unzip pkg-config cmake autoconf automake libtool make python3 nasm yasm
           echo "::endgroup::"
 
           /usr/lib/llvm-21/bin/clang-cl --version
