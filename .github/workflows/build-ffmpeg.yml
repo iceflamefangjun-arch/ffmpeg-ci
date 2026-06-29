@@ -122,18 +122,15 @@ jobs:
           set -euo pipefail
 
           if [ -z "${FFMPEG_REPO_URL:-}" ]; then
-            echo "::error::Set repository variable FFMPEG_REPO_URL to the GitHub FFmpeg mirror URL."
-            exit 1
+            echo "::warning::FFMPEG_REPO_URL is not set; ffmpeg/b.sh will use its built-in default mirror."
           fi
 
           if [ "${{ inputs.variant }}" = "live" ]; then
             if [ -z "${FDK_AAC_REPO_URL:-}" ]; then
-              echo "::error::Set repository variable FDK_AAC_REPO_URL to the GitHub fdk-aac mirror URL."
-              exit 1
+              echo "::warning::FDK_AAC_REPO_URL is not set; fdk-aac/b.sh will use its built-in default mirror."
             fi
             if [ -z "${X264_REPO_URL:-}" ]; then
-              echo "::error::Set repository variable X264_REPO_URL to the GitHub x264 mirror URL."
-              exit 1
+              echo "::warning::X264_REPO_URL is not set; x264/b.sh will use its built-in default mirror."
             fi
           fi
 
