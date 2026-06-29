@@ -13,7 +13,7 @@
 - Generated FFmpeg packages are written to the repository root as `ffmpeg-7.1.1-*.zip` or `ffmpeg-live-7.1.1-*.zip`.
 
 ## Build and validation
-- GitHub Actions runs on `windows-2022`, prepares WSL, installs LLVM 21, resolves Visual Studio and Windows SDK paths, then invokes the selected root script.
+- GitHub Actions runs on `windows-2022`, prepares MSYS2 bash/autotools tools, resolves Visual Studio, Windows SDK, and Windows LLVM paths, then invokes the selected root script.
 - Repository variables `FFMPEG_REPO_URL`, `FDK_AAC_REPO_URL`, and `X264_REPO_URL` point at the GitHub mirrors used by dependency scripts.
 - Repository secret `MIRROR_REPO_TOKEN` is optional, but when set it is used to rewrite GitHub clone URLs for private mirror access.
 - Do not run local or CI builds unless the user explicitly asks for a build. Prefer static checks for workflow/script edits.
@@ -22,4 +22,4 @@
 - Match existing shell script style: small direct changes, explicit error checks, and no new abstraction for one-off behavior.
 - Keep path handling repository-root relative unless a dependency script already expects `DEPENDSPATH`.
 - Do not add `ijkplayer` playback-engine assumptions, Windows demo project steps, renderer guidance, or app-layer packaging rules here.
-- Preserve UTF-8 BOM and CRLF formatting for repository instruction/config files when editing on Windows.
+- Preserve UTF-8 without BOM and LF line endings for scripts, workflow files, patches, and docs.

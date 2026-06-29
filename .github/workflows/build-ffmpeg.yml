@@ -40,96 +40,27 @@ jobs:
       FDK_AAC_REPO_URL: ${{ vars.FDK_AAC_REPO_URL }}
       X264_REPO_URL: ${{ vars.X264_REPO_URL }}
       MIRROR_REPO_TOKEN: ${{ secrets.MIRROR_REPO_TOKEN }}
-      WSL_DISTRO: Ubuntu-22.04
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Ubuntu WSL
-        uses: Vampire/setup-wsl@v7
+      - name: Setup MSYS2
+        uses: msys2/setup-msys2@v2
         with:
-          distribution: Ubuntu-22.04
-          wsl-version: 1
-          set-as-default: 'true'
-
-      - name: Prepare WSL build environment
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          wsl.exe --list --verbose
-          $bashScript = @'
-          set -euo pipefail
-
-          export DEBIAN_FRONTEND=noninteractive
-          export NEEDRESTART_MODE=a
-          export APT_LISTCHANGES_FRONTEND=none
-
-          sudo rm -f /var/lib/man-db/auto-update
-          sudo mkdir -p /etc/dpkg/dpkg.cfg.d
-          sudo tee /etc/dpkg/dpkg.cfg.d/01-ci-nodoc >/dev/null <<'EOF'
-          path-exclude=/usr/share/doc/*
-          path-include=/usr/share/doc/*/copyright
-          path-exclude=/usr/share/man/*
-          path-exclude=/usr/share/info/*
-          EOF
-          sudo tee /etc/apt/apt.conf.d/99-ci-no-triggers >/dev/null <<'EOF'
-          DPkg::Options {
-            "--no-triggers";
-          };
-          EOF
-
-          sudo tee /usr/local/sbin/ci-noop >/dev/null <<'EOF'
-          #!/bin/sh
-          exit 0
-          EOF
-          sudo chmod +x /usr/local/sbin/ci-noop
-          disable_info_triggers() {
-            if [ -e /usr/sbin/update-info-dir ] && [ ! -L /usr/sbin/update-info-dir ]; then
-              sudo dpkg-divert --local --rename --add /usr/sbin/update-info-dir || true
-            fi
-            sudo ln -sf /usr/local/sbin/ci-noop /usr/sbin/update-info-dir
-            if [ -f /var/lib/dpkg/info/install-info.postinst ]; then
-              sudo cp /usr/local/sbin/ci-noop /var/lib/dpkg/info/install-info.postinst
-            fi
-          }
-          disable_info_triggers
-          sudo apt-get -o Dpkg::Use-Pty=0 purge -y install-info || true
-          sudo apt-mark hold install-info || true
-          disable_info_triggers
-
-          apt_install() {
-            disable_info_triggers
-            sudo apt-get -o Dpkg::Use-Pty=0 -o DPkg::Options::=--no-triggers install -y --no-install-recommends "$@"
-            disable_info_triggers
-          }
-
-          echo "::group::APT update"
-          sudo apt-get -o Dpkg::Use-Pty=0 update
-          echo "::endgroup::"
-
-          echo "::group::Install bootstrap packages"
-          apt_install ca-certificates wget gnupg lsb-release software-properties-common
-          echo "::endgroup::"
-
-          if [ ! -x /usr/lib/llvm-21/bin/clang-cl ]; then
-            echo "::group::Install LLVM 21"
-            wget -q https://apt.llvm.org/llvm.sh -O /tmp/llvm.sh
-            chmod +x /tmp/llvm.sh
-            disable_info_triggers
-            sudo /tmp/llvm.sh 21
-            disable_info_triggers
-            echo "::endgroup::"
-          fi
-
-          echo "::group::Install build packages"
-          apt_install git curl zip unzip pkg-config cmake autoconf automake libtool make python3 nasm yasm
-          echo "::endgroup::"
-
-          /usr/lib/llvm-21/bin/clang-cl --version
-          '@
-          $bashScript = $bashScript -replace "`r`n?", "`n"
-          wsl.exe -d $env:WSL_DISTRO --exec bash -lc $bashScript
+          msystem: MSYS
+          update: true
+          path-type: inherit
+          install: >-
+            base-devel
+            git
+            curl
+            zip
+            unzip
+            cmake
+            pkgconf
+            python
+            nasm
 
       - name: Resolve Visual Studio and SDK paths
         shell: pwsh
@@ -162,33 +93,31 @@ jobs:
             throw "Windows 10 SDK include/lib directories were not found under $sdkRoot."
           }
 
-          function Convert-ToWslPath([string]$Path) {
-            $converted = & wsl.exe -d $env:WSL_DISTRO --exec wslpath -a $Path
-            if ($LASTEXITCODE -ne 0 -or -not $converted) {
-              throw "Failed to convert path for WSL: $Path"
-            }
-            return $converted.Trim()
+          $llvmRoots = @(
+            'C:\Program Files\LLVM'
+            (Join-Path $vsPath 'VC\Tools\Llvm\x64')
+          )
+          $llvmRoot = $llvmRoots | Where-Object {
+            Test-Path -LiteralPath (Join-Path $_ 'bin\clang-cl.exe')
+          } | Select-Object -First 1
+          if (-not $llvmRoot) {
+            throw 'LLVM clang-cl was not found on the runner.'
           }
 
-          $workspaceWsl = Convert-ToWslPath $env:GITHUB_WORKSPACE
-          $runnerTempWsl = Convert-ToWslPath $env:RUNNER_TEMP
-          $winSdkIncWsl = Convert-ToWslPath (Join-Path $sdkRoot "Include\$($sdkVersion.Name)")
-          $winSdkLibWsl = Convert-ToWslPath (Join-Path $sdkRoot "Lib\$($sdkVersion.Name)")
-          $vcIncWsl = Convert-ToWslPath (Join-Path $msvcVersion.FullName 'include')
-          $vcLibWsl = Convert-ToWslPath (Join-Path $msvcVersion.FullName 'lib')
+          function Convert-ToForwardSlash([string]$Path) {
+            return ($Path -replace '\\', '/')
+          }
 
           @(
-            "CLANG_SHELL_WORKSPACE=$workspaceWsl"
-            "DEPENDSPATH=$runnerTempWsl/ffmpeg-src"
-            "WINSDKINC=$winSdkIncWsl"
-            "WINSDKLIB=$winSdkLibWsl"
-            "VCINC=$vcIncWsl"
-            "VCLIB=$vcLibWsl"
-            "TOOLCHAIN=/usr/lib/llvm-21"
+            "LLVM_ROOT=$(Convert-ToForwardSlash $llvmRoot)"
+            "WINSDKINC=$(Convert-ToForwardSlash (Join-Path $sdkRoot "Include\$($sdkVersion.Name)"))"
+            "WINSDKLIB=$(Convert-ToForwardSlash (Join-Path $sdkRoot "Lib\$($sdkVersion.Name)"))"
+            "VCINC=$(Convert-ToForwardSlash (Join-Path $msvcVersion.FullName 'include'))"
+            "VCLIB=$(Convert-ToForwardSlash (Join-Path $msvcVersion.FullName 'lib'))"
           ) | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Validate mirror configuration
-        shell: bash
+        shell: msys2 {0}
         run: |
           set -euo pipefail
 
@@ -208,56 +137,45 @@ jobs:
             fi
           fi
 
-      - name: Configure Git mirror access in WSL
-        shell: pwsh
+      - name: Configure Git mirror access
+        shell: msys2 {0}
         run: |
-          $ErrorActionPreference = 'Stop'
-          $wslEnv = @(
-            "MIRROR_REPO_TOKEN=$env:MIRROR_REPO_TOKEN"
-            "CLANG_SHELL_WORKSPACE=$env:CLANG_SHELL_WORKSPACE"
-            "DEPENDSPATH=$env:DEPENDSPATH"
-          )
-          $bashScript = @'
           set -euo pipefail
+
+          workspace="$(cygpath -u "$GITHUB_WORKSPACE")"
+          deps="$(cygpath -u "$RUNNER_TEMP")/ffmpeg-src"
           if [ -n "${MIRROR_REPO_TOKEN:-}" ]; then
             git config --global url."https://x-access-token:${MIRROR_REPO_TOKEN}@github.com/".insteadOf "https://github.com/"
             git config --global url."https://x-access-token:${MIRROR_REPO_TOKEN}@github.com/".insteadOf "git@github.com:"
           fi
-          git config --global --add safe.directory "$CLANG_SHELL_WORKSPACE"
-          mkdir -p "$DEPENDSPATH"
-          '@
-          $bashScript = $bashScript -replace "`r`n?", "`n"
-          wsl.exe -d $env:WSL_DISTRO --exec env $wslEnv bash -lc $bashScript
+          git config --global --add safe.directory "$workspace"
+          mkdir -p "$deps"
 
       - name: Build FFmpeg
-        shell: pwsh
+        shell: msys2 {0}
         run: |
-          $ErrorActionPreference = 'Stop'
-          $variant = '${{ inputs.variant }}'
-          $arch = '${{ inputs.arch }}'
-          $buildType = '${{ inputs.build_type }}'
-          $script = if ($variant -eq 'live') { 'build-all-live.sh' } else { 'build-all.sh' }
-          $wslEnv = @(
-            "CLANG_SHELL_WORKSPACE=$env:CLANG_SHELL_WORKSPACE"
-            "DEPENDSPATH=$env:DEPENDSPATH"
-            "TOOLCHAIN=$env:TOOLCHAIN"
-            "WINSDKINC=$env:WINSDKINC"
-            "WINSDKLIB=$env:WINSDKLIB"
-            "VCINC=$env:VCINC"
-            "VCLIB=$env:VCLIB"
-            "FFMPEG_REPO_URL=$env:FFMPEG_REPO_URL"
-            "FDK_AAC_REPO_URL=$env:FDK_AAC_REPO_URL"
-            "X264_REPO_URL=$env:X264_REPO_URL"
-          )
-
-          $bashScript = @"
           set -euo pipefail
-          cd "\$CLANG_SHELL_WORKSPACE"
+
+          variant='${{ inputs.variant }}'
+          arch='${{ inputs.arch }}'
+          buildType='${{ inputs.build_type }}'
+          script='build-all.sh'
+          if [ "$variant" = "live" ]; then
+            script='build-all-live.sh'
+          fi
+
+          export CLANG_SHELL_WORKSPACE="$(cygpath -u "$GITHUB_WORKSPACE")"
+          export DEPENDSPATH="$(cygpath -u "$RUNNER_TEMP")/ffmpeg-src"
+          export TOOLCHAIN="$(cygpath -u "$LLVM_ROOT")"
+          export MSYS2_ARG_CONV_EXCL="/machine:*;/stack:*;/safeseh:*;/libpath:*"
+
+          echo "TOOLCHAIN=$TOOLCHAIN"
+          "$TOOLCHAIN/bin/clang-cl" --version
+          "$TOOLCHAIN/bin/lld-link" --version
+
+          cd "$CLANG_SHELL_WORKSPACE"
           chmod +x "$script"
           ./"$script" "$arch" "$buildType"
-          "@
-          $bashScript = $bashScript -replace "`r`n?", "`n"
-          wsl.exe -d $env:WSL_DISTRO --exec env $wslEnv bash -lc $bashScript
 
       - name: Upload FFmpeg artifact
         uses: actions/upload-artifact@v4
