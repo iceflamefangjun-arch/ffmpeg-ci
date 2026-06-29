@@ -196,18 +196,17 @@ do
     export ARCH=${archs[i]}
     export PATH="${TOOLCHAIN}/bin:${BASE_PATH}"
 
-    export AR="${TOOLCHAIN}/bin/llvm-ar"
-    export NM="${TOOLCHAIN}/bin/llvm-nm"
-    export MT="${TOOLCHAIN}/bin/llvm-mt"
-    export CC="${TOOLCHAIN}/bin/clang-cl"
-    export CXX="${TOOLCHAIN}/bin/clang-cl"
-    export LD="${TOOLCHAIN}/bin/lld-link"
-    export RANLIB="${TOOLCHAIN}/bin/llvm-ranlib"
-    export STRIP="${TOOLCHAIN}/bin/llvm-strip"
+    export AR="${LLVM_AR_TOOL}"
+    export NM="${LLVM_NM_TOOL}"
+    export MT="${LLVM_MT_TOOL}"
+    export CC="${CLANG_CL_TOOL}"
+    export CXX="${CLANG_CL_TOOL}"
+    export LD="${LLD_LINK_TOOL}"
+    export RANLIB="${LLVM_RANLIB_TOOL}"
+    export STRIP="${LLVM_STRIP_TOOL}"
 
-    export INCLUDE="${WINSDKINC}/winrt;${WINSDKINC}/ucrt;${WINSDKINC}/um;${WINSDKINC}/shared;${VCINC}"
+    set_msvc_arch_env "${archs[i]}"
     echo "INCLUDE:$INCLUDE"
-    export LIB="${VCLIB}/${archs[i]};${WINSDKLIB}/um/${archs[i]};${WINSDKLIB}/ucrt/${archs[i]}"
     echo "LIB:$LIB"
 
     case ${ARCH} in
@@ -380,8 +379,8 @@ do
 
     #export LIB="${LIB};${CURRENTPATH}/../libmp3lame/${OUTPUT}/lib"
     if [ -n "${ffmpeg_optional_lib_path}" ]; then
-        export LIB="${LIB};${ffmpeg_optional_lib_path}"
-        export LDFLAGS="${LDFLAGS} /libpath:${ffmpeg_optional_lib_path}"
+        append_msvc_lib_path "${ffmpeg_optional_lib_path}"
+        export LDFLAGS="${LDFLAGS} $(msvc_libpath_flag "${ffmpeg_optional_lib_path}")"
     fi
 
     export LIBS="${LIBS} ${CURRENTPATH}/../pthread-win32/${OUTPUT}/lib/pthreadVC3.lib"

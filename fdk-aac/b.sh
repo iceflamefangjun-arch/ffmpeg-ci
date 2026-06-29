@@ -56,17 +56,16 @@ do
     export ARCH=${archs[i]}
     export PATH="${TOOLCHAIN}/bin:${PATH}"
 
-    export AR="${TOOLCHAIN}/bin/llvm-lib"
-    export NM="${TOOLCHAIN}/bin/llvm-nm"
-    export MT="${TOOLCHAIN}/bin/llvm-mt"
-    export CC="${TOOLCHAIN}/bin/clang-cl"
-    export CXX="${TOOLCHAIN}/bin/clang-cl"
-    export LD="${TOOLCHAIN}/bin/lld-link"
-    export RANLIB="${TOOLCHAIN}/bin/llvm-ranlib"
-    export STRIP="${TOOLCHAIN}/bin/llvm-strip"
+    export AR="${LLVM_LIB_TOOL}"
+    export NM="${LLVM_NM_TOOL}"
+    export MT="${LLVM_MT_TOOL}"
+    export CC="${CLANG_CL_TOOL}"
+    export CXX="${CLANG_CL_TOOL}"
+    export LD="${LLD_LINK_TOOL}"
+    export RANLIB="${LLVM_RANLIB_TOOL}"
+    export STRIP="${LLVM_STRIP_TOOL}"
 
-    export INCLUDE="${WINSDKINC}/winrt;${WINSDKINC}/ucrt;${WINSDKINC}/um;${WINSDKINC}/shared;${VCINC}"
-    export LIB="${VCLIB}/${archs[i]};${WINSDKLIB}/um/${archs[i]};${WINSDKLIB}/ucrt/${archs[i]}"
+    set_msvc_arch_env "${archs[i]}"
 
     case ${ARCH} in
       x86)
@@ -86,14 +85,14 @@ do
     WSLPREFIX="${CURRENTPATH}/${OUTPUT}"
     rm -rf "${WSLPREFIX}" && mkdir -p "${WSLPREFIX}"
 
-    cmake -D CMAKE_INSTALL_PREFIX=${WSLPREFIX} \
-          -D CMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE} -D CMAKE_INSTALL_LIBDIR=lib \
-          -D CMAKE_SYSTEM_NAME=Windows -D CMAKE_MSVC_RUNTIME_LIBRARY="" \
-          -D CMAKE_AR=${AR} -D CMAKE_NM=${NM} -D CMAKE_MT=${MT} -D CMAKE_RC_COMPILER=${TOOLCHAIN}/bin/llvm-rc \
-          -D CMAKE_C_FLAGS_RELEASE="/Ob2" -D CMAKE_CXX_FLAGS_RELEASE="/Ob2" \
-          -D BUILD_PROGRAMS=OFF -D BUILD_SHARED_LIBS=OFF -D CMAKE_VERBOSE_MAKEFILE=ON ${DEPENDSPATH}/fdk-aac || exit
+    run_cmake_configure "-DCMAKE_INSTALL_PREFIX=${WSLPREFIX}" \
+          "-DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}" "-DCMAKE_INSTALL_LIBDIR=lib" \
+          "-DCMAKE_SYSTEM_NAME=Windows" "-DCMAKE_MSVC_RUNTIME_LIBRARY=" \
+          "-DCMAKE_AR=${AR}" "-DCMAKE_NM=${NM}" "-DCMAKE_MT=${MT}" "-DCMAKE_RC_COMPILER=${RC}" \
+          "-DCMAKE_C_FLAGS_RELEASE=/Ob2" "-DCMAKE_CXX_FLAGS_RELEASE=/Ob2" \
+          "-DBUILD_PROGRAMS=OFF" "-DBUILD_SHARED_LIBS=OFF" "-DCMAKE_VERBOSE_MAKEFILE=ON" "${DEPENDSPATH}/fdk-aac" || exit
 
-    make V=1 -j $(nproc) && make install && make clean || exit
+    run_cmake_build_install && cmake --build . --target clean || exit
 
     # Keep both names for better compatibility with pkg-config/FFmpeg checks on Windows.
     if [ -f "${WSLPREFIX}/lib/fdk-aac.lib" ] && [ ! -f "${WSLPREFIX}/lib/libfdk-aac.lib" ]; then

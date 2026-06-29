@@ -69,20 +69,19 @@ do
     echo "Target:" ${targets[i]}
 
     export ARCH=${archs[i]}
-    export PATH=${TOOLCHAIN}/bin:$PATH
+    export PATH="${TOOLCHAIN}/bin:${PATH}"
 
-    export AR="${TOOLCHAIN}/bin/llvm-ar"
-    export NM="${TOOLCHAIN}/bin/llvm-nm"
-    export MT="${TOOLCHAIN}/bin/llvm-mt"
-    export CC="${TOOLCHAIN}/bin/clang-cl"
-    export CXX="${TOOLCHAIN}/bin/clang-cl"
-    export LD="${TOOLCHAIN}/bin/lld-link"
-    export RANLIB="${TOOLCHAIN}/bin/llvm-ranlib"
-    export STRIP="${TOOLCHAIN}/bin/llvm-strip"
+    export AR="${LLVM_AR_TOOL}"
+    export NM="${LLVM_NM_TOOL}"
+    export MT="${LLVM_MT_TOOL}"
+    export CC="${CLANG_CL_TOOL}"
+    export CXX="${CLANG_CL_TOOL}"
+    export LD="${LLD_LINK_TOOL}"
+    export RANLIB="${LLVM_RANLIB_TOOL}"
+    export STRIP="${LLVM_STRIP_TOOL}"
 
-    export INCLUDE="${WINSDKINC}/winrt;${WINSDKINC}/ucrt;${WINSDKINC}/um;${WINSDKINC}/shared;${VCINC}"
+    set_msvc_arch_env "${archs[i]}"
     echo "INCLUDE:$INCLUDE"
-    export LIB="${VCLIB}/${archs[i]};${WINSDKLIB}/um/${archs[i]};${WINSDKLIB}/ucrt/${archs[i]}"
     echo "LIB:$LIB"
 
     case ${ARCH} in

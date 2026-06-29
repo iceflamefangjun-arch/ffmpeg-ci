@@ -63,20 +63,19 @@ do
     echo "Target:" ${targets[i]}
 
     export ARCH=${archs[i]}
-    export PATH=${TOOLCHAIN}/bin:$PATH
+    export PATH="${TOOLCHAIN}/bin:${PATH}"
 
-    export AR="${TOOLCHAIN}/bin/llvm-lib"
-    export NM="${TOOLCHAIN}/bin/llvm-nm"
-    export MT="${TOOLCHAIN}/bin/llvm-mt"
-    export CC="${TOOLCHAIN}/bin/clang-cl"
-    export CXX="${TOOLCHAIN}/bin/clang-cl"
-    export LD="${TOOLCHAIN}/bin/lld-link"
-    export RANLIB="${TOOLCHAIN}/bin/llvm-ranlib"
-    export STRIP="${TOOLCHAIN}/bin/llvm-strip"
+    export AR="${LLVM_LIB_TOOL}"
+    export NM="${LLVM_NM_TOOL}"
+    export MT="${LLVM_MT_TOOL}"
+    export CC="${CLANG_CL_TOOL}"
+    export CXX="${CLANG_CL_TOOL}"
+    export LD="${LLD_LINK_TOOL}"
+    export RANLIB="${LLVM_RANLIB_TOOL}"
+    export STRIP="${LLVM_STRIP_TOOL}"
 
-    export INCLUDE="${WINSDKINC}/winrt;${WINSDKINC}/ucrt;${WINSDKINC}/um;${WINSDKINC}/shared;${VCINC}"
+    set_msvc_arch_env "${archs[i]}"
     echo "INCLUDE:$INCLUDE"
-    export LIB="${VCLIB}/${archs[i]};${WINSDKLIB}/um/${archs[i]};${WINSDKLIB}/ucrt/${archs[i]}"
     echo "LIB:$LIB"
 
     case ${ARCH} in
@@ -101,25 +100,25 @@ do
     # 设置CMAKE_MSVC_RUNTIME_LIBRARY禁止cmake自动设置-MD
     WSLPREFIX="${CURRENTPATH}/${OUTPUT}"
     rm -rf "${WSLPREFIX}" && mkdir -p "${WSLPREFIX}"
-    cmake -D CMAKE_INSTALL_PREFIX=${WSLPREFIX} \
-          -D CMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE} -D CMAKE_INSTALL_LIBDIR=lib \
-          -D CMAKE_SYSTEM_NAME=Windows -D CMAKE_MSVC_RUNTIME_LIBRARY="" \
-          -D CMAKE_AR=${AR} -D CMAKE_NM=${NM} -D CMAKE_MT=${MT} -D CMAKE_RC_COMPILER=${TOOLCHAIN}/bin/llvm-rc \
-          -D CMAKE_C_FLAGS_RELEASE="/Ob2" -D CMAKE_CXX_FLAGS_RELEASE="/Ob2" \
-          -D BUILD_SHARED_LIBS=OFF \
-          -D LIBXML2_WITH_C14N=ON -D LIBXML2_WITH_HTML=OFF -D LIBXML2_WITH_CATALOG=OFF \
-          -D LIBXML2_WITH_DEBUG=OFF -D LIBXML2_WITH_FTP=OFF -D LIBXML2_WITH_HTTP=OFF \
-          -D LIBXML2_WITH_ICONV=OFF -D LIBXML2_WITH_ICU=OFF -D LIBXML2_WITH_ISO8859X=OFF \
-          -D LIBXML2_WITH_LEGACY=OFF -D LIBXML2_WITH_LZMA=OFF -D LIBXML2_WITH_MODULES=OFF \
-          -D LIBXML2_WITH_OUTPUT=OFF -D LIBXML2_WITH_PATTERN=OFF -D LIBXML2_WITH_PUSH=OFF \
-          -D LIBXML2_WITH_PYTHON=OFF -D LIBXML2_WITH_READLINE=OFF -D LIBXML2_WITH_REGEXPS=OFF \
-          -D LIBXML2_WITH_RELAXNG=OFF -D LIBXML2_WITH_SAX1=OFF -D LIBXML2_WITH_SCHEMAS=OFF \
-          -D LIBXML2_WITH_TLS=OFF -D LIBXML2_WITH_VALID=OFF -D LIBXML2_WITH_ZLIB=ON \
-          -D ZLIB_INCLUDE_DIR=${CURRENTPATH}/../zlib/${OUTPUT}/include \
-          -D ZLIB_LIBRARY_RELEASE=${CURRENTPATH}/../zlib/${OUTPUT}/lib/zlib.lib \
-          -D CMAKE_VERBOSE_MAKEFILE=ON ${DEPENDSPATH}/libxml2
+    run_cmake_configure "-DCMAKE_INSTALL_PREFIX=${WSLPREFIX}" \
+          "-DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}" "-DCMAKE_INSTALL_LIBDIR=lib" \
+          "-DCMAKE_SYSTEM_NAME=Windows" "-DCMAKE_MSVC_RUNTIME_LIBRARY=" \
+          "-DCMAKE_AR=${AR}" "-DCMAKE_NM=${NM}" "-DCMAKE_MT=${MT}" "-DCMAKE_RC_COMPILER=${RC}" \
+          "-DCMAKE_C_FLAGS_RELEASE=/Ob2" "-DCMAKE_CXX_FLAGS_RELEASE=/Ob2" \
+          "-DBUILD_SHARED_LIBS=OFF" \
+          "-DLIBXML2_WITH_C14N=ON" "-DLIBXML2_WITH_HTML=OFF" "-DLIBXML2_WITH_CATALOG=OFF" \
+          "-DLIBXML2_WITH_DEBUG=OFF" "-DLIBXML2_WITH_FTP=OFF" "-DLIBXML2_WITH_HTTP=OFF" \
+          "-DLIBXML2_WITH_ICONV=OFF" "-DLIBXML2_WITH_ICU=OFF" "-DLIBXML2_WITH_ISO8859X=OFF" \
+          "-DLIBXML2_WITH_LEGACY=OFF" "-DLIBXML2_WITH_LZMA=OFF" "-DLIBXML2_WITH_MODULES=OFF" \
+          "-DLIBXML2_WITH_OUTPUT=OFF" "-DLIBXML2_WITH_PATTERN=OFF" "-DLIBXML2_WITH_PUSH=OFF" \
+          "-DLIBXML2_WITH_PYTHON=OFF" "-DLIBXML2_WITH_READLINE=OFF" "-DLIBXML2_WITH_REGEXPS=OFF" \
+          "-DLIBXML2_WITH_RELAXNG=OFF" "-DLIBXML2_WITH_SAX1=OFF" "-DLIBXML2_WITH_SCHEMAS=OFF" \
+          "-DLIBXML2_WITH_TLS=OFF" "-DLIBXML2_WITH_VALID=OFF" "-DLIBXML2_WITH_ZLIB=ON" \
+          "-DZLIB_INCLUDE_DIR=${CURRENTPATH}/../zlib/${OUTPUT}/include" \
+          "-DZLIB_LIBRARY_RELEASE=${CURRENTPATH}/../zlib/${OUTPUT}/lib/zlib.lib" \
+          "-DCMAKE_VERBOSE_MAKEFILE=ON" "${DEPENDSPATH}/libxml2"
 
-    make -j $(nproc) && make install && make clean || exit
+    run_cmake_build_install && cmake --build . --target clean || exit
     mkdir -p "${CURRENTPATH}/${OUTPUT}"
 
     mv -f ${CURRENTPATH}/${OUTPUT}/lib/libxml2sd.lib ${CURRENTPATH}/${OUTPUT}/lib/xml2.lib
