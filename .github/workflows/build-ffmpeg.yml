@@ -1,0 +1,199 @@
+﻿name: Build FFmpeg
+
+on:
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: FFmpeg build variant
+        required: true
+        default: player
+        type: choice
+        options:
+          - player
+          - live
+      arch:
+        description: Target architecture
+        required: true
+        default: x64
+        type: choice
+        options:
+          - x64
+          - x86
+      build_type:
+        description: Build type
+        required: true
+        default: static
+        type: choice
+        options:
+          - release
+          - debug
+          - static
+
+jobs:
+  build:
+    name: ${{ inputs.variant }} ${{ inputs.arch }} ${{ inputs.build_type }}
+    runs-on: windows-2022
+    timeout-minutes: 360
+
+    env:
+      FFMPEG_REPO_URL: ${{ vars.FFMPEG_REPO_URL }}
+      FDK_AAC_REPO_URL: ${{ vars.FDK_AAC_REPO_URL }}
+      X264_REPO_URL: ${{ vars.X264_REPO_URL }}
+      MIRROR_REPO_TOKEN: ${{ secrets.MIRROR_REPO_TOKEN }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare WSL build environment
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          wsl.exe --status
+          wsl.exe --list --verbose
+          wsl.exe bash -lc @'
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y ca-certificates wget gnupg lsb-release software-properties-common
+          if [ ! -x /usr/lib/llvm-21/bin/clang-cl ]; then
+            wget -q https://apt.llvm.org/llvm.sh -O /tmp/llvm.sh
+            chmod +x /tmp/llvm.sh
+            sudo /tmp/llvm.sh 21
+          fi
+          sudo apt-get install -y git curl zip pkg-config cmake autoconf automake libtool make python3 nasm yasm build-essential
+          /usr/lib/llvm-21/bin/clang-cl --version
+          '@
+
+      - name: Resolve Visual Studio and SDK paths
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $vsPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vsPath) {
+            throw 'Visual Studio with MSVC tools was not found on the runner.'
+          }
+
+          $msvcRoot = Join-Path $vsPath 'VC\Tools\MSVC'
+          $msvcVersion = Get-ChildItem -LiteralPath $msvcRoot -Directory |
+            Sort-Object Name -Descending |
+            Select-Object -First 1
+          if (-not $msvcVersion) {
+            throw "MSVC toolset directory was not found under $msvcRoot."
+          }
+
+          $sdkRoot = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10'
+          $sdkVersion = Get-ChildItem -LiteralPath (Join-Path $sdkRoot 'Include') -Directory |
+            Where-Object {
+              (Test-Path -LiteralPath (Join-Path $_.FullName 'um')) -and
+              (Test-Path -LiteralPath (Join-Path $sdkRoot "Lib\$($_.Name)\um"))
+            } |
+            Sort-Object Name -Descending |
+            Select-Object -First 1
+          if (-not $sdkVersion) {
+            throw "Windows 10 SDK include/lib directories were not found under $sdkRoot."
+          }
+
+          function Convert-ToWslPath([string]$Path) {
+            $converted = & wsl.exe wslpath -a $Path
+            if ($LASTEXITCODE -ne 0 -or -not $converted) {
+              throw "Failed to convert path for WSL: $Path"
+            }
+            return $converted.Trim()
+          }
+
+          $workspaceWsl = Convert-ToWslPath $env:GITHUB_WORKSPACE
+          $runnerTempWsl = Convert-ToWslPath $env:RUNNER_TEMP
+          $winSdkIncWsl = Convert-ToWslPath (Join-Path $sdkRoot "Include\$($sdkVersion.Name)")
+          $winSdkLibWsl = Convert-ToWslPath (Join-Path $sdkRoot "Lib\$($sdkVersion.Name)")
+          $vcIncWsl = Convert-ToWslPath (Join-Path $msvcVersion.FullName 'include')
+          $vcLibWsl = Convert-ToWslPath (Join-Path $msvcVersion.FullName 'lib')
+
+          @(
+            "CLANG_SHELL_WORKSPACE=$workspaceWsl"
+            "DEPENDSPATH=$runnerTempWsl/ffmpeg-src"
+            "WINSDKINC=$winSdkIncWsl"
+            "WINSDKLIB=$winSdkLibWsl"
+            "VCINC=$vcIncWsl"
+            "VCLIB=$vcLibWsl"
+            "TOOLCHAIN=/usr/lib/llvm-21"
+          ) | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Validate mirror configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "${FFMPEG_REPO_URL:-}" ]; then
+            echo "::error::Set repository variable FFMPEG_REPO_URL to the GitHub FFmpeg mirror URL."
+            exit 1
+          fi
+
+          if [ "${{ inputs.variant }}" = "live" ]; then
+            if [ -z "${FDK_AAC_REPO_URL:-}" ]; then
+              echo "::error::Set repository variable FDK_AAC_REPO_URL to the GitHub fdk-aac mirror URL."
+              exit 1
+            fi
+            if [ -z "${X264_REPO_URL:-}" ]; then
+              echo "::error::Set repository variable X264_REPO_URL to the GitHub x264 mirror URL."
+              exit 1
+            fi
+          fi
+
+      - name: Configure Git mirror access in WSL
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $wslEnv = @(
+            "MIRROR_REPO_TOKEN=$env:MIRROR_REPO_TOKEN"
+            "CLANG_SHELL_WORKSPACE=$env:CLANG_SHELL_WORKSPACE"
+            "DEPENDSPATH=$env:DEPENDSPATH"
+          )
+          wsl.exe env $wslEnv bash -lc @'
+          set -euo pipefail
+          if [ -n "${MIRROR_REPO_TOKEN:-}" ]; then
+            git config --global url."https://x-access-token:${MIRROR_REPO_TOKEN}@github.com/".insteadOf "https://github.com/"
+            git config --global url."https://x-access-token:${MIRROR_REPO_TOKEN}@github.com/".insteadOf "git@github.com:"
+          fi
+          git config --global --add safe.directory "$CLANG_SHELL_WORKSPACE"
+          mkdir -p "$DEPENDSPATH"
+          '@
+
+      - name: Build FFmpeg
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $variant = '${{ inputs.variant }}'
+          $arch = '${{ inputs.arch }}'
+          $buildType = '${{ inputs.build_type }}'
+          $script = if ($variant -eq 'live') { 'build-all-live.sh' } else { 'build-all.sh' }
+          $wslEnv = @(
+            "CLANG_SHELL_WORKSPACE=$env:CLANG_SHELL_WORKSPACE"
+            "DEPENDSPATH=$env:DEPENDSPATH"
+            "TOOLCHAIN=$env:TOOLCHAIN"
+            "WINSDKINC=$env:WINSDKINC"
+            "WINSDKLIB=$env:WINSDKLIB"
+            "VCINC=$env:VCINC"
+            "VCLIB=$env:VCLIB"
+            "FFMPEG_REPO_URL=$env:FFMPEG_REPO_URL"
+            "FDK_AAC_REPO_URL=$env:FDK_AAC_REPO_URL"
+            "X264_REPO_URL=$env:X264_REPO_URL"
+          )
+
+          wsl.exe env $wslEnv bash -lc @"
+          set -euo pipefail
+          cd "\$CLANG_SHELL_WORKSPACE"
+          chmod +x "$script"
+          ./"$script" "$arch" "$buildType"
+          "@
+
+      - name: Upload FFmpeg artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-${{ inputs.variant }}-${{ inputs.arch }}-${{ inputs.build_type }}-${{ github.run_number }}
+          path: |
+            ffmpeg-7.1.1-${{ inputs.arch }}-${{ inputs.build_type }}-*.zip
+            ffmpeg-live-7.1.1-${{ inputs.arch }}-${{ inputs.build_type }}-*.zip
+          if-no-files-found: error
+          retention-days: 14
