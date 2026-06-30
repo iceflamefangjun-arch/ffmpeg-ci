@@ -177,6 +177,20 @@ jobs:
           chmod +x "$script"
           ./"$script" "$arch" "$buildType"
 
+      - name: Print ffmpeg config.log on failure
+        if: failure()
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          config_log="$(cygpath -u "$RUNNER_TEMP")/ffmpeg-src/ffmpeg/ffbuild/config.log"
+          if [ -f "$config_log" ]; then
+            echo "===== ffmpeg config.log ====="
+            cat "$config_log"
+            echo "===== end config.log ====="
+          else
+            echo "config.log not found at $config_log"
+          fi
+
       - name: Upload FFmpeg artifact
         uses: actions/upload-artifact@v4
         with:
