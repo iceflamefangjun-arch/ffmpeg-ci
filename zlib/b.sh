@@ -110,6 +110,7 @@ do
           "-DCMAKE_C_COMPILER=$(cmake_tool_path "${CC}")" \
           "-DCMAKE_CXX_COMPILER=$(cmake_tool_path "${CXX}")" \
           "-DCMAKE_C_FLAGS_RELEASE=/Ob2" "-DCMAKE_CXX_FLAGS_RELEASE=/Ob2" \
+          "-DZLIB_BUILD_EXAMPLES=OFF" \
           "-DCMAKE_VERBOSE_MAKEFILE=ON" "${DEPENDSPATH}/zlib-src/zlib-${VERSION}"
 
     run_cmake_build_install && cmake --build . --target clean || exit
