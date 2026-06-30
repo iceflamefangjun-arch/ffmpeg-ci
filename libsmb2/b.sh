@@ -6,7 +6,7 @@ CURRENTPATH="${SCRIPT_DIR}"
 LIBSMB2_TAG="libsmb2-6.2"
 
 if [ -z "${LIBSMB2_SRC_DIR:-}" ]; then
-    if [ -d "${CURRENTPATH}/src/libsmb2" ]; then
+    if [ -f "${CURRENTPATH}/src/libsmb2/lib/init.c" ]; then
         LIBSMB2_SRC_DIR="${CURRENTPATH}/src/libsmb2"
         LIBSMB2_MANAGED_SRC=0
     else
