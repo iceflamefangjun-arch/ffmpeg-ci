@@ -169,7 +169,27 @@ jobs:
           export TOOLCHAIN="$(cygpath -u "$LLVM_ROOT")"
           export MSYS2_ARG_CONV_EXCL="/machine:*;/stack:*;/safeseh:*;/libpath:*"
 
+          # Import the MSVC / Windows SDK paths discovered by the prior PowerShell step
+          # and expose them as Windows paths so clang-cl/lld-link can find headers & libs.
+          export WINSDKINC="${WINSDKINC:-}"
+          export WINSDKLIB="${WINSDKLIB:-}"
+          export VCINC="${VCINC:-}"
+          export VCLIB="${VCLIB:-}"
+
+          VCINC_WIN=$(cygpath -w "$VCINC")
+          VCLIB_WIN=$(cygpath -w "$VCLIB")
+          WINSDKINC_WIN=$(cygpath -w "$WINSDKINC")
+          WINSDKLIB_WIN=$(cygpath -w "$WINSDKLIB")
+          export INCLUDE="$VCINC_WIN;$WINSDKINC_WIN/winrt;$WINSDKINC_WIN/ucrt;$WINSDKINC_WIN/um;$WINSDKINC_WIN/shared"
+          export LIB="$VCLIB_WIN/${arch};$WINSDKLIB_WIN/um/${arch};$WINSDKLIB_WIN/ucrt/${arch}"
+          export LIBPATH="$LIB"
+          export PATH="$(cygpath -w "$TOOLCHAIN")/bin:$PATH"
+
           echo "TOOLCHAIN=$TOOLCHAIN"
+          echo "VCINC=$VCINC"
+          echo "VCLIB=$VCLIB"
+          echo "WINSDKINC=$WINSDKINC"
+          echo "WINSDKLIB=$WINSDKLIB"
           "$TOOLCHAIN/bin/clang-cl" --version
           "$TOOLCHAIN/bin/lld-link" --version
 
