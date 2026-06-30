@@ -93,7 +93,7 @@ do
           ;;
     esac
 
-    export CFLAGS="${OPTIMIZE} ${msvc_arch_cflags} -fuse-ld=lld -fms-compatibility"
+    export CFLAGS="${OPTIMIZE} ${msvc_arch_cflags} -fuse-ld=lld -fms-compatibility -I${CURRENTPATH}/../zlib/${OUTPUT}/include"
     export CXXFLAGS="${CFLAGS} ${CXX_OPTIMIZE} /EHsc -std:c++11"
     #export LDFLAGS="${msvc_arch_ldflags}"
 
