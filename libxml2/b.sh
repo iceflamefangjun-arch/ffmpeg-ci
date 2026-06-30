@@ -127,8 +127,12 @@ do
     run_cmake_build_install && cmake --build . --target clean || exit
     mkdir -p "${CURRENTPATH}/${OUTPUT}"
 
-    mv -f ${CURRENTPATH}/${OUTPUT}/lib/libxml2sd.lib ${CURRENTPATH}/${OUTPUT}/lib/xml2.lib
-    mv -f ${CURRENTPATH}/${OUTPUT}/lib/libxml2s.lib ${CURRENTPATH}/${OUTPUT}/lib/xml2.lib
+    for name in libxml2sd.lib libxml2s.lib; do
+        if [ -f ${CURRENTPATH}/${OUTPUT}/lib/${name} ]; then
+            mv -f ${CURRENTPATH}/${OUTPUT}/lib/${name} ${CURRENTPATH}/${OUTPUT}/lib/xml2.lib
+            break
+        fi
+    done
 
     popd
 done
