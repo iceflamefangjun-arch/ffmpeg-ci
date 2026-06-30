@@ -6,7 +6,7 @@ CURRENTPATH="${SCRIPT_DIR}"
 LIBSMB2_TAG="libsmb2-6.2"
 
 if [ -z "${LIBSMB2_SRC_DIR:-}" ]; then
-    if [ -d "${CURRENTPATH}/src/libsmb2" ]; then
+    if [ -f "${CURRENTPATH}/src/libsmb2/lib/init.c" ]; then
         LIBSMB2_SRC_DIR="${CURRENTPATH}/src/libsmb2"
         LIBSMB2_MANAGED_SRC=0
     else
@@ -83,7 +83,7 @@ do
     cp -r "${LIBSMB2_SRC_DIR}" "${WSLSRC}" || exit
 
     pushd "${WSLSRC}" >/dev/null || exit
-    patch --batch -N -p1 <"${CURRENTPATH}/0001-fix-smb2-not-support-longer-than-1024-characters-url.patch" || exit
+    tr -d '\r' <"${CURRENTPATH}/0001-fix-smb2-not-support-longer-than-1024-characters-url.patch" | patch --batch -N -p1 || exit
     popd >/dev/null || exit
 
     pushd "${WSLBUILD}" || exit
