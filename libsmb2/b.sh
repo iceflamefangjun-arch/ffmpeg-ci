@@ -83,7 +83,7 @@ do
     cp -r "${LIBSMB2_SRC_DIR}" "${WSLSRC}" || exit
 
     pushd "${WSLSRC}" >/dev/null || exit
-    patch --batch -N -p1 <"${CURRENTPATH}/0001-fix-smb2-not-support-longer-than-1024-characters-url.patch" || exit
+    tr -d '\r' <"${CURRENTPATH}/0001-fix-smb2-not-support-longer-than-1024-characters-url.patch" | patch --batch -N -p1 || exit
     popd >/dev/null || exit
 
     pushd "${WSLBUILD}" || exit
