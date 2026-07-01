@@ -36,7 +36,7 @@ to_native_path() {
 	local path_value="$1"
 
 	if [ "${BUILD_HOST}" = "msys2" ] && command -v cygpath >/dev/null 2>&1; then
-		cygpath -aw "${path_value}"
+		cygpath -aw "${path_value}" | tr '\\' '/'
 	else
 		printf '%s\n' "${path_value}"
 	fi
