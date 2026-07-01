@@ -167,7 +167,6 @@ jobs:
           export CLANG_SHELL_WORKSPACE="$(cygpath -u "$GITHUB_WORKSPACE")"
           export DEPENDSPATH="$(cygpath -u "$RUNNER_TEMP")/ffmpeg-src"
           export TOOLCHAIN="$(cygpath -u "$LLVM_ROOT")"
-          export MSYS2_ARG_CONV_EXCL="/machine:*;/stack:*;/safeseh:*;/libpath:*"
 
           # Import the MSVC / Windows SDK paths discovered by the prior PowerShell step
           # and expose them as Windows paths so clang-cl/lld-link can find headers & libs.

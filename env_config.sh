@@ -151,10 +151,22 @@ prepend_toolchain_path() {
 	esac
 }
 
+configure_msys2_tmpdir() {
+	[ "${BUILD_HOST}" = "msys2" ] || return 0
+
+	# On GitHub Actions the runner temp directory is guaranteed to exist and
+	# be writable from both MSYS2 and native Windows tools. Point TMPDIR there
+	# so ffmpeg configure's test compilations create files in a path that
+	# clang-cl can actually open.
+	if [ -n "${RUNNER_TEMP:-}" ]; then
+		export TMPDIR="$(cygpath -u "$RUNNER_TEMP")"
+	fi
+}
+
 configure_msys2_argument_conversion() {
 	[ "${BUILD_HOST}" = "msys2" ] || return 0
 
-	local protect="/nologo;/O;/Od;/O2;/Ob;/MD;/MDd;/MT;/MTd;/D;/D_DEBUG;/DNDEBUG;/Zc:;/bigobj;/utf-8;/GF;/Gy;/Gw;/EH;/std:;/Fo;/fo;/Fd;/fd;/Fe;/fe;/Fp;/fp;/FR;/fr;/Fa;/fa;/Fi;/fi;/FI;/FS;/Zi;/Z7;/RTC;/W;/wd;/WX;/GR;/Gd;/GS;/guard:;/machine:;/MACHINE:;/stack:;/STACK:;/safeseh:;/SAFESEH:;/subsystem:;/SUBSYSTEM:;/libpath:;/LIBPATH:;/manifest;/MANIFEST;/manifestuac;/manifestdependency;/manifestfile:;/debug;/DEBUG;/INCREMENTAL;/OPT:;/LTCG;/DLL;/IMPLIB:;/PDB:;/out:;/OUT:;/def:;/DEF:;/nodefaultlib:;/NODEFAULTLIB:"
+	local protect="/nologo;-nologo;/O;-O;/Od;-Od;/O2;-O2;/Ob;-Ob;/MD;-MD;/MDd;-MDd;/MT;-MT;/MTd;-MTd;/D;-D;/D_DEBUG;-D_DEBUG;/DNDEBUG;-DNDEBUG;/Zc:;-Zc:;/bigobj;-bigobj;/utf-8;-utf-8;/GF;-GF;/Gy;-Gy;/Gw;-Gw;/EH;-EH;/std:;-std:;/Fo;-Fo;/fo;-fo;/Fd;-Fd;/fd;-fd;/Fe;-Fe;/fe;-fe;/Fp;-Fp;/fp;-fp;/FR;-FR;/fr;-fr;/Fa;-Fa;/fa;-fa;/Fi;-Fi;/fi;-fi;/FI;-FI;/FS;-FS;/Zi;-Zi;/Z7;-Z7;/RTC;-RTC;/W;-W;/wd;-wd;/WX;-WX;/GR;-GR;/Gd;-Gd;/GS;-GS;/guard:;-guard:;/machine:;-machine:;/MACHINE:;-MACHINE:;/stack:;-stack:;/STACK:;-STACK:;/safeseh:;-safeseh:;/SAFESEH:;-SAFESEH:;/subsystem:;-subsystem:;/SUBSYSTEM:;-SUBSYSTEM:;/libpath:;-libpath:;/LIBPATH:;-LIBPATH:;/manifest;-manifest;/MANIFEST;-MANIFEST;/manifestuac;-manifestuac;/manifestdependency;-manifestdependency;/manifestfile:;-manifestfile:;/debug;-debug;/DEBUG;-DEBUG;/INCREMENTAL;-INCREMENTAL;/OPT:;-OPT:;/LTCG;-LTCG;/DLL;-DLL;/IMPLIB:;-IMPLIB:;/PDB:;-PDB:;/out:;-out:;/OUT:;-OUT:;/def:;-def:;/DEF:;-DEF:;/nodefaultlib:;-nodefaultlib:;/NODEFAULTLIB:;-NODEFAULTLIB:"
 
 	if [ -n "${MSYS2_ARG_CONV_EXCL:-}" ]; then
 		export MSYS2_ARG_CONV_EXCL="${protect};${MSYS2_ARG_CONV_EXCL}"
@@ -375,6 +387,7 @@ detect_build_host
 discover_toolchain
 prepend_toolchain_path
 configure_msys2_argument_conversion
+configure_msys2_tmpdir
 discover_dependspath
 discover_windows_sdk || {
 	echo "Failed to locate Windows SDK paths." >&2
