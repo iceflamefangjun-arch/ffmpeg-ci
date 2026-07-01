@@ -193,6 +193,53 @@ discover_dependspath() {
 	}
 }
 
+generate_msys2_tool_wrapper() {
+	local tool_name="$1"
+	local real_tool="$2"
+	local wrapper_dir="${DEPENDSPATH}/.clang-shell-wrappers"
+	local wrapper_bin_dir="${DEPENDSPATH}/bin"
+	local wrapper="${wrapper_bin_dir}/${tool_name}"
+
+	mkdir -p "${wrapper_dir}" "${wrapper_bin_dir}"
+
+	cat > "${wrapper}" <<WRAPPER_EOF
+#!/usr/bin/env bash
+# On MSYS2, wrap ${tool_name} so Unix-style absolute paths embedded in MSVC-style
+# arguments (e.g. -Fo/d/a/_temp/.../test.o or -out:/d/a/_temp/.../test.exe) are
+# converted to Windows paths before reaching the native binary. MSYS2_ARG_CONV_EXCL
+# protects these flags from automatic conversion, leaving ${tool_name} unable to
+# open the Unix-style paths.
+set -euo pipefail
+
+real_tool="${real_tool}"
+args=()
+
+for arg in "\$@"; do
+    converted="\${arg}"
+
+    # Whole argument is a Unix absolute path like /d/a/...
+    if [[ "\${arg}" =~ ^/[a-zA-Z]/.*\$ ]]; then
+        converted="\$(cygpath -w "\${arg}")"
+    # Option with an attached path using a colon, e.g. /LIBPATH:/d/a/... or -out:/d/a/...
+    elif [[ "\${arg}" =~ ^([-/][A-Za-z]+:)(/[a-zA-Z]/.*)\$ ]]; then
+        opt="\${BASH_REMATCH[1]}"
+        path="\${BASH_REMATCH[2]}"
+        converted="\${opt}\$(cygpath -w "\${path}")"
+    # Option with an attached path, e.g. -Fo/d/a/... or /I/d/a/...
+    elif [[ "\${arg}" =~ ^([-/][A-Za-z]+)(/[a-zA-Z]/.*)\$ ]]; then
+        opt="\${BASH_REMATCH[1]}"
+        path="\${BASH_REMATCH[2]}"
+        converted="\${opt}\$(cygpath -w "\${path}")"
+    fi
+
+    args+=("\${converted}")
+done
+
+exec "\${real_tool}" "\${args[@]}"
+WRAPPER_EOF
+	chmod +x "${wrapper}"
+}
+
 export_msvc_environment() {
 	if [ "${BUILD_HOST}" = "msys2" ]; then
 		export INCLUDE="$(to_native_path "${WINSDKINC}/winrt");$(to_native_path "${WINSDKINC}/ucrt");$(to_native_path "${WINSDKINC}/um");$(to_native_path "${WINSDKINC}/shared");$(to_native_path "${VCINC}")"
@@ -201,57 +248,35 @@ export_msvc_environment() {
 	fi
 
 	export CLANG_CL_TOOL="${CLANG_CL_TOOL:-clang-cl}"
+	export LLD_LINK_TOOL="${LLD_LINK_TOOL:-lld-link}"
 
-	# On MSYS2, wrap clang-cl so Unix absolute paths embedded in options such as
-	# -Fo/... are translated to Windows paths before reaching the native binary.
-	if [ "${BUILD_HOST}" = "msys2" ] && [ -z "${CLANG_CL_TOOL_WRAPPED:-}" ]; then
-		local wrapper_dir="${DEPENDSPATH}/.clang-shell-wrappers"
-		local wrapper="${wrapper_dir}/clang-cl-msys2.sh"
+	# On MSYS2, place small wrappers on PATH for clang-cl and lld-link so that
+	# configure's generated MSVC-style flags (e.g. -Fo/... or -out:/...) have
+	# their Unix absolute paths translated to Windows paths before reaching the
+	# native binaries. MSYS2_ARG_CONV_EXCL protects these flags from automatic
+	# conversion, which leaves the tools unable to open the Unix-style paths.
+	if [ "${BUILD_HOST}" = "msys2" ] && [ -z "${MSYS2_TOOL_WRAPPERS_READY:-}" ]; then
+		local real_clang_cl real_lld_link
+		local wrapper_bin_dir="${DEPENDSPATH}/bin"
 
-		mkdir -p "${wrapper_dir}"
-		cat > "${wrapper}" <<'WRAPPER_EOF'
-#!/usr/bin/env bash
-# Wrap clang-cl on MSYS2 so Unix-style absolute paths embedded in compiler
-# arguments are converted to Windows paths that the native clang-cl binary can
-# open. FFmpeg's configure script generates MSVC-style flags like
-# -Fo/d/a/_temp/.../test.o; MSYS2_ARG_CONV_EXCL keeps those flags intact but
-# leaves the attached path as a Unix path, which clang-cl cannot resolve.
-set -euo pipefail
+		real_clang_cl="$(command -v "${CLANG_CL_TOOL}")" || real_clang_cl="${CLANG_CL_TOOL}"
+		real_clang_cl="$(to_shell_path "${real_clang_cl}")"
+		generate_msys2_tool_wrapper "clang-cl" "${real_clang_cl}"
 
-real_clang_cl="${REAL_CLANG_CL_TOOL:-${CLANG_CL_TOOL:-clang-cl}}"
-args=()
+		real_lld_link="$(command -v "${LLD_LINK_TOOL}")" || real_lld_link="${LLD_LINK_TOOL}"
+		real_lld_link="$(to_shell_path "${real_lld_link}")"
+		generate_msys2_tool_wrapper "lld-link" "${real_lld_link}"
 
-for arg in "$@"; do
-    converted="${arg}"
+		case ":${PATH}:" in
+		  *":${wrapper_bin_dir}:"*) ;;
+		  *) export PATH="${wrapper_bin_dir}:${PATH}" ;;
+		esac
 
-    # Whole argument is a Unix absolute path like /d/a/...
-    if [[ "${arg}" =~ ^/[a-zA-Z]/.*$ ]]; then
-        converted="$(cygpath -w "${arg}")"
-    # Option with an attached path using a colon, e.g. /LIBPATH:/d/a/...
-    elif [[ "${arg}" =~ ^([-/][A-Za-z]+:)(/[a-zA-Z]/.*)$ ]]; then
-        opt="${BASH_REMATCH[1]}"
-        path="${BASH_REMATCH[2]}"
-        converted="${opt}$(cygpath -w "${path}")"
-    # Option with an attached path, e.g. -Fo/d/a/... or /I/d/a/...
-    elif [[ "${arg}" =~ ^([-/][A-Za-z]+)(/[a-zA-Z]/.*)$ ]]; then
-        opt="${BASH_REMATCH[1]}"
-        path="${BASH_REMATCH[2]}"
-        converted="${opt}$(cygpath -w "${path}")"
-    fi
-
-    args+=("${converted}")
-done
-
-exec "${real_clang_cl}" "${args[@]}"
-WRAPPER_EOF
-		chmod +x "${wrapper}"
-
-		export REAL_CLANG_CL_TOOL="${CLANG_CL_TOOL}"
-		export CLANG_CL_TOOL="${wrapper}"
-		export CLANG_CL_TOOL_WRAPPED=1
+		export REAL_CLANG_CL_TOOL="${real_clang_cl}"
+		export REAL_LLD_LINK_TOOL="${real_lld_link}"
+		export MSYS2_TOOL_WRAPPERS_READY=1
 	fi
 
-	export LLD_LINK_TOOL="${LLD_LINK_TOOL:-lld-link}"
 	export LLVM_LIB_TOOL="${LLVM_LIB_TOOL:-llvm-lib}"
 	export LLVM_AR_TOOL="${LLVM_AR_TOOL:-llvm-ar}"
 	export LLVM_NM_TOOL="${LLVM_NM_TOOL:-llvm-nm}"
