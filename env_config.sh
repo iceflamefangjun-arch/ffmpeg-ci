@@ -301,6 +301,10 @@ print_build_environment_once() {
 	echo "SHELL: ${SHELL:-}"
 	echo "TOOLCHAIN: ${TOOLCHAIN}"
 	echo "DEPENDSPATH: ${DEPENDSPATH}"
+	echo "WINSDKINC: ${WINSDKINC}"
+	echo "WINSDKLIB: ${WINSDKLIB}"
+	echo "VCINC: ${VCINC}"
+	echo "VCLIB: ${VCLIB}"
 	echo "cmake: $(command -v cmake 2>/dev/null || echo not-found)"
 	cmake --version 2>/dev/null | head -n 1 || true
 	echo "ninja: $(command -v ninja 2>/dev/null || echo not-found)"
