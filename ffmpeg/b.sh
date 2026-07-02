@@ -195,6 +195,9 @@ do
 
     export ARCH=${archs[i]}
     export PATH="${DEPENDSPATH}/bin:${TOOLCHAIN}/bin:${BASE_PATH}"
+    echo "PATH=${PATH}" >&2
+    echo "which clang-cl: $(command -v clang-cl)" >&2
+    echo "which lld-link: $(command -v lld-link)" >&2
 
     export AR="${LLVM_AR_TOOL}"
     export NM="${LLVM_NM_TOOL}"

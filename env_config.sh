@@ -277,6 +277,11 @@ export_msvc_environment() {
 		  *) export PATH="${wrapper_bin_dir}:${PATH}" ;;
 		esac
 
+		echo "MSYS2 tool wrappers installed in ${wrapper_bin_dir}" >&2
+		echo "clang-cl wrapper resolves to: $(command -v clang-cl)" >&2
+		echo "lld-link wrapper resolves to: $(command -v lld-link)" >&2
+		head -n 5 "${wrapper_bin_dir}/clang-cl" >&2
+
 		export REAL_CLANG_CL_TOOL="${real_clang_cl}"
 		export REAL_LLD_LINK_TOOL="${real_lld_link}"
 		export MSYS2_TOOL_WRAPPERS_READY=1
