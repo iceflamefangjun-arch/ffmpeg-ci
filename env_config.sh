@@ -220,11 +220,15 @@ for arg in "\$@"; do
     # Whole argument is a Unix absolute path like /d/a/...
     if [[ "\${arg}" =~ ^/[a-zA-Z]/.*\$ ]]; then
         converted="\$(cygpath -w "\${arg}")"
-    # Normalize lowercase -libpath: to uppercase /LIBPATH: so clang-cl/lld-link
-    # recognize it, while converting any attached Unix path.
+    # -libpath: is only meaningful to the linker. Drop it for clang-cl,
+    # and normalize it to /LIBPATH: for lld-link.
     elif [[ "\${arg}" =~ ^-libpath:(/.+)\$ ]]; then
         path="\${BASH_REMATCH[1]}"
-        converted="/LIBPATH:\$(cygpath -w "\${path}")"
+        if [ "${tool_name}" = "lld-link" ]; then
+            converted="/LIBPATH:\$(cygpath -w "\${path}")"
+        else
+            continue
+        fi
     # Option with an attached path using a colon, e.g. /LIBPATH:/d/a/... or -out:/d/a/...
     elif [[ "\${arg}" =~ ^([-/][A-Za-z]+:)(/[a-zA-Z]/.*)\$ ]]; then
         opt="\${BASH_REMATCH[1]}"
