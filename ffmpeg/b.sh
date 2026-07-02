@@ -358,6 +358,14 @@ do
             "${zlib_pc_file}" || exit
     fi
 
+    libxml2_pc_file="${libxml2_pc_dir}/libxml-2.0.pc"
+    if [ -f "${libxml2_pc_file}" ]; then
+        rewrite_file "${libxml2_pc_file}" sed \
+            -e 's/[[:space:]]\*-lpthreads[[:space:]]*/ /g' \
+            -e 's/[[:space:]]\*-lpthreads$//' \
+            "${libxml2_pc_file}" || exit
+    fi
+
     zconf_h_file="${CURRENTPATH}/../zlib/${OUTPUT}/include/zconf.h"
     if [ -f "${zconf_h_file}" ]; then
         rewrite_file "${zconf_h_file}" sed -r -e 's|^\s*#\s*ifdef\s+(HAVE_UNISTD_H)\s|#if \1|' "${zconf_h_file}" || exit

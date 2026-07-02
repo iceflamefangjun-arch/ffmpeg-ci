@@ -217,19 +217,22 @@ args=()
 for arg in "\$@"; do
     converted="\${arg}"
 
-    # Whole argument is a Unix absolute path like /d/a/...
-    if [[ "\${arg}" =~ ^/[a-zA-Z]/.*\$ ]]; then
-        converted="\$(cygpath -w "\${arg}")"
-    # Option with an attached path using a colon, e.g. /LIBPATH:/d/a/... or -out:/d/a/...
+    # Normalize lowercase MSVC-style flags to uppercase so clang-cl/lld-link
+    # recognize them, while converting any attached Unix path.
+    if [[ "\${arg}" =~ ^-libpath:(/.+)\$ ]]; then
+        path="\${BASH_REMATCH[1]}"
+        converted="/LIBPATH:\$(cygpath -w "\${path}")"
     elif [[ "\${arg}" =~ ^([-/][A-Za-z]+:)(/[a-zA-Z]/.*)\$ ]]; then
         opt="\${BASH_REMATCH[1]}"
         path="\${BASH_REMATCH[2]}"
         converted="\${opt}\$(cygpath -w "\${path}")"
-    # Option with an attached path, e.g. -Fo/d/a/... or /I/d/a/...
     elif [[ "\${arg}" =~ ^([-/][A-Za-z]+)(/[a-zA-Z]/.*)\$ ]]; then
         opt="\${BASH_REMATCH[1]}"
         path="\${BASH_REMATCH[2]}"
         converted="\${opt}\$(cygpath -w "\${path}")"
+    # Whole argument is a Unix absolute path like /d/a/...
+    elif [[ "\${arg}" =~ ^/[a-zA-Z]/.*\$ ]]; then
+        converted="\$(cygpath -w "\${arg}")"
     fi
 
     args+=("\${converted}")
