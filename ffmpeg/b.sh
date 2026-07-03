@@ -364,8 +364,8 @@ do
     libxml2_pc_file="${libxml2_pc_dir}/libxml-2.0.pc"
     if [ -f "${libxml2_pc_file}" ]; then
         rewrite_file "${libxml2_pc_file}" sed \
-            -e 's/[[:space:]]\*-lpthreads[[:space:]]*/ /g' \
-            -e 's/[[:space:]]\*-lpthreads$//' \
+            -e 's/[[:space:]]*-lpthreads[[:space:]]*/ /g' \
+            -e 's/[[:space:]]*-lpthreads$//' \
             "${libxml2_pc_file}" || exit
     fi
 
