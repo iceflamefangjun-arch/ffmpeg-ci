@@ -58,7 +58,7 @@ do
     pushd "${WSLBUILD}" || exit
 
     export ARCH=${archs[i]}
-    export PATH="${TOOLCHAIN}/bin:${PATH}"
+    export PATH="${DEPENDSPATH}/bin:${TOOLCHAIN}/bin:${PATH}"
 
     export AR="${LLVM_LIB_TOOL}"
     export NM="${LLVM_NM_TOOL}"

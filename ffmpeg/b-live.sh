@@ -216,7 +216,7 @@ do
     echo "Target:" ${targets[i]}
 
     export ARCH=${archs[i]}
-    export PATH="${TOOLCHAIN}/bin:${BASE_PATH}"
+    export PATH="${DEPENDSPATH}/bin:${TOOLCHAIN}/bin:${BASE_PATH}"
 
     export AR="${LLVM_AR_TOOL}"
     export NM="${LLVM_NM_TOOL}"

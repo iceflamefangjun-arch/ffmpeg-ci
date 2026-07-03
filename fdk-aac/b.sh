@@ -3,7 +3,7 @@ cd "${SCRIPT_DIR}" || exit 1
 source "${SCRIPT_DIR}/../env_config.sh"
 
 CURRENTPATH="${SCRIPT_DIR}"
-FDK_AAC_REPO_URL="${FDK_AAC_REPO_URL:-git@code2.sohuno.com:ifox-public/fdk-aac.git}"
+FDK_AAC_REPO_URL="${FDK_AAC_REPO_URL:-https://github.com/mstorsjo/fdk-aac.git}"
 
 set_target_archs "${2:-x64}"
 
@@ -54,7 +54,7 @@ do
     pushd "${WSLBUILD}" || exit
 
     export ARCH=${archs[i]}
-    export PATH="${TOOLCHAIN}/bin:${PATH}"
+    export PATH="${DEPENDSPATH}/bin:${TOOLCHAIN}/bin:${PATH}"
 
     export AR="${LLVM_LIB_TOOL}"
     export NM="${LLVM_NM_TOOL}"

@@ -3,7 +3,7 @@ cd "${SCRIPT_DIR}" || exit 1
 source "${SCRIPT_DIR}/../env_config.sh"
 
 CURRENTPATH="${SCRIPT_DIR}"
-X264_REPO_URL="${X264_REPO_URL:-git@code2.sohuno.com:ifox-public/x264.git}"
+X264_REPO_URL="${X264_REPO_URL:-https://code.videolan.org/videolan/x264.git}"
 
 set_target_archs "${2:-x64}"
 
@@ -61,7 +61,7 @@ do
     pushd "${WSLSRC}" || exit
 
     export ARCH=${archs[i]}
-    export PATH="${TOOLCHAIN}/bin:${PATH}"
+    export PATH="${DEPENDSPATH}/bin:${TOOLCHAIN}/bin:${PATH}"
 
     export AR="${LLVM_AR_TOOL}"
     export NM="${LLVM_NM_TOOL}"
