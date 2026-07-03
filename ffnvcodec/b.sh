@@ -8,10 +8,7 @@ CURRENTPATH="${SCRIPT_DIR}"
 if [ ! -e "${DEPENDSPATH}/nv-codec-headers" ]; then
     echo "Downloading nv-codec-headers"
     pushd "${DEPENDSPATH}" || exit
-    git clone https://git.videolan.org/git/ffmpeg/nv-codec-headers.git || exit
-    pushd nv-codec-headers || exit
-    git checkout sdk/${VERSION} || exit
-    popd || exit
+    git clone --depth=1 --branch "sdk/${VERSION}" https://github.com/FFmpeg/nv-codec-headers.git nv-codec-headers || exit
     popd || exit
 else
     echo "Update nv-codec-headers"
