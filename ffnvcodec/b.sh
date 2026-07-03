@@ -2,18 +2,18 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
 cd "${SCRIPT_DIR}" || exit 1
 source "${SCRIPT_DIR}/../env_config.sh"
 
-VERSION="12.0"
+VERSION="12.2.72.0"
 CURRENTPATH="${SCRIPT_DIR}"
 
 if [ ! -e "${DEPENDSPATH}/nv-codec-headers" ]; then
     echo "Downloading nv-codec-headers"
     pushd "${DEPENDSPATH}" || exit
-    git clone --depth=1 --branch "sdk/${VERSION}" https://github.com/FFmpeg/nv-codec-headers.git nv-codec-headers || exit
+    git clone --depth=1 --branch "n${VERSION}" https://github.com/FFmpeg/nv-codec-headers.git nv-codec-headers || exit
     popd || exit
 else
     echo "Update nv-codec-headers"
     pushd "${DEPENDSPATH}/nv-codec-headers" || exit
-    git checkout sdk/${VERSION} || exit
+    git checkout n${VERSION} || exit
     #git pull
     popd || exit
 fi
