@@ -173,6 +173,26 @@ echo "Applying patch 0026-clean-avio-error-when-meet-eof-or-read-data.patch..."
 patch -d "${FFMPEG_SRC_DIR}" -p1 <${CURRENTPATH}/0026-clean-avio-error-when-meet-eof-or-read-data.patch || exit
 echo "Applying patch 0027-mov-auxiliary_info_sample_count-is-not-required.patch..."
 patch -d "${FFMPEG_SRC_DIR}" -p1 <${CURRENTPATH}/0027-mov-auxiliary_info_sample_count-is-not-required.patch || exit
+
+# Clang ThinLTO on Windows cannot resolve symbols defined in function-local
+# inline assembly when they are referenced from outside that assembly. This
+# affects libavcodec/x86/mlpdsp_init.c (ff_mlp_firorder_* / ff_mlp_iirorder_*
+# defined in mlpdsp.asm). Compile only that file without LTO so the rest of
+# FFmpeg still benefits from LTO. See LLVM issues #64127 / #76046.
+# https://github.com/llvm/llvm-project/issues/64127
+# https://github.com/llvm/llvm-project/issues/76046
+if [ "${BUILD}" = "static" ] || [ "${BUILD}" = "release" ]; then
+    echo "Disabling LTO for libavcodec/x86/mlpdsp_init.c..."
+    mlpdsp_makefile="${FFMPEG_SRC_DIR}/libavcodec/x86/Makefile"
+    if [ -f "${mlpdsp_makefile}" ]; then
+        # Add per-object flag to override the global -flto=thin. The -fno-lto
+        # flag is appended after the global CFLAGS so it takes precedence.
+        if ! grep -q 'CFLAGS-mlpdsp_init.o' "${mlpdsp_makefile}"; then
+            printf '\nCFLAGS-mlpdsp_init.o += -fno-lto\n' >> "${mlpdsp_makefile}"
+        fi
+    fi
+fi
+
 #echo "Applying patch ffmpeg-configure.patch..."
 #patch -d "${FFMPEG_SRC_DIR}" -p1 <${CURRENTPATH}/ffmpeg-configure.patch || exit
 

@@ -187,9 +187,17 @@ jobs:
           "$TOOLCHAIN/bin/clang-cl" --version
           "$TOOLCHAIN/bin/lld-link" --version
 
+          echo "::group::Disk space before build"
+          df -h
+          echo "::endgroup::"
+
           cd "$CLANG_SHELL_WORKSPACE"
           chmod +x "$script"
           ./"$script" "$arch" "$buildType"
+
+          echo "::group::Disk space after build"
+          df -h
+          echo "::endgroup::"
 
       - name: Print ffmpeg config.log on failure
         if: failure()
