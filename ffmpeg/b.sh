@@ -173,6 +173,39 @@ echo "Applying patch 0026-clean-avio-error-when-meet-eof-or-read-data.patch..."
 patch -d "${FFMPEG_SRC_DIR}" -p1 <${CURRENTPATH}/0026-clean-avio-error-when-meet-eof-or-read-data.patch || exit
 echo "Applying patch 0027-mov-auxiliary_info_sample_count-is-not-required.patch..."
 patch -d "${FFMPEG_SRC_DIR}" -p1 <${CURRENTPATH}/0027-mov-auxiliary_info_sample_count-is-not-required.patch || exit
+
+# Clang ThinLTO on Windows cannot resolve symbols defined in function-local
+# inline assembly when they are referenced from outside that assembly (e.g.
+# ff_mlp_firorder_* / ff_mlp_iirorder_* in libavcodec/x86/mlpdsp.asm,
+# referenced from mlpdsp_init.c). Upstream FFmpeg disables the feature that
+# relies on such nonlocal labels when LTO is enabled on Clang/Windows.
+# Apply the same workaround here. See LLVM issues #64127 / #76046.
+# https://github.com/llvm/llvm-project/issues/64127
+# https://github.com/llvm/llvm-project/issues/76046
+if [ "${BUILD}" = "static" ] || [ "${BUILD}" = "release" ]; then
+    echo "Disabling inline_asm_nonlocal_labels for Clang/Windows LTO..."
+    ffmpeg_configure="${FFMPEG_SRC_DIR}/configure"
+    # Insert a block right after the existing LTO flag checks that disables
+    # inline_asm_nonlocal_labels for clang-cl targeting Windows.
+    awk '
+        /disable inline_asm_direct_symbol_refs/ && !done {
+            print
+            print "    # Work around LLVM ThinLTO bug on Windows with nonlocal asm labels"
+            print "    if [ \"$cc_type\" = \"clang\" ]; then"
+            print "        case \"$target_os\" in"
+            print "            mingw32|win32)"
+            print "                disable inline_asm_nonlocal_labels"
+            print "                ;;"
+            print "        esac"
+            print "    fi"
+            done = 1
+            next
+        }
+        { print }
+    ' "${ffmpeg_configure}" > "${ffmpeg_configure}.tmp" && \
+    mv -f "${ffmpeg_configure}.tmp" "${ffmpeg_configure}" || exit
+fi
+
 #echo "Applying patch ffmpeg-configure.patch..."
 #patch -d "${FFMPEG_SRC_DIR}" -p1 <${CURRENTPATH}/ffmpeg-configure.patch || exit
 
