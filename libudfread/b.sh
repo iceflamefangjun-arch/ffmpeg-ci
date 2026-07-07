@@ -23,7 +23,10 @@ case $1 in
       ;;
   static)
       BUILD="static"
-      OPTIMIZE="/O2 /MT /DNDEBUG ${OPTIMIZE} /GF /Gy /Gw -flto=thin -fsplit-lto-unit"
+      # Thin LTO object files are much larger than normal object files and
+      # overflow the GitHub Actions hosted Windows runner temp disk. FFmpeg
+      # itself still performs LTO; external dependencies do not need it.
+      OPTIMIZE="/O2 /MT /DNDEBUG ${OPTIMIZE}"
       CMAKE_BUILD_TYPE="Release"
       ;;
   *)
