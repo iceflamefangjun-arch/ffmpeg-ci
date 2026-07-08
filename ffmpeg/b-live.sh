@@ -100,15 +100,18 @@ case $1 in
       ;;
   release)
       BUILD="release"
-      OPTIMIZE="/O2 /MD /DNDEBUG ${OPTIMIZE} /GF /Gy /Gw -flto=thin -fsplit-lto-unit"
+      # Keep LTO disabled on GitHub Actions for the same stability reasons as
+      # the player build: clang-cl/lld-link can hit NASM symbol and disk issues.
+      OPTIMIZE="/O2 /MD /DNDEBUG ${OPTIMIZE} /GF /Gy /Gw"
       CMAKE_BUILD_TYPE="Release"
-      is_ffmpeg_debug="disable-debug --enable-optimizations --enable-small --enable-lto"
+      is_ffmpeg_debug="disable-debug --enable-optimizations --enable-small"
       ;;
   static)
       BUILD="static"
-      OPTIMIZE="/O2 /MT /DNDEBUG ${OPTIMIZE} /GF /Gy /Gw -flto=thin -fsplit-lto-unit"
+      # Same as release: keep LTO disabled for CI stability.
+      OPTIMIZE="/O2 /MT /DNDEBUG ${OPTIMIZE} /GF /Gy /Gw"
       CMAKE_BUILD_TYPE="Release"
-      is_ffmpeg_debug="disable-debug --enable-optimizations --enable-small --enable-lto"
+      is_ffmpeg_debug="disable-debug --enable-optimizations --enable-small"
       ;;
   *)
       echo "Only support [debug|release|static]" >&2; exit

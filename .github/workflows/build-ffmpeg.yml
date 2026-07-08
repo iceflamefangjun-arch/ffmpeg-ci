@@ -28,12 +28,20 @@ on:
           - release
           - debug
           - static
+      run_all_configs:
+        description: Run all player/live x86/x64 debug/release/static configs
+        required: true
+        default: false
+        type: boolean
 
 jobs:
   build:
-    name: ${{ inputs.variant }} ${{ inputs.arch }} ${{ inputs.build_type }}
+    name: ${{ matrix.variant }} ${{ matrix.arch }} ${{ matrix.build_type }}
     runs-on: windows-2022
     timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(inputs.run_all_configs && '{"include":[{"variant":"player","arch":"x86","build_type":"debug"},{"variant":"player","arch":"x86","build_type":"release"},{"variant":"player","arch":"x86","build_type":"static"},{"variant":"player","arch":"x64","build_type":"debug"},{"variant":"player","arch":"x64","build_type":"release"},{"variant":"player","arch":"x64","build_type":"static"},{"variant":"live","arch":"x86","build_type":"debug"},{"variant":"live","arch":"x86","build_type":"release"},{"variant":"live","arch":"x86","build_type":"static"},{"variant":"live","arch":"x64","build_type":"debug"},{"variant":"live","arch":"x64","build_type":"release"},{"variant":"live","arch":"x64","build_type":"static"}]}' || format('{{"include":[{{"variant":"{0}","arch":"{1}","build_type":"{2}"}}]}}', inputs.variant, inputs.arch, inputs.build_type)) }}
 
     env:
       FFMPEG_REPO_URL: ${{ vars.FFMPEG_REPO_URL }}
@@ -128,7 +136,7 @@ jobs:
             echo "::warning::FFMPEG_REPO_URL is not set; ffmpeg/b.sh will use its built-in default mirror."
           fi
 
-          if [ "${{ inputs.variant }}" = "live" ]; then
+          if [ "${{ matrix.variant }}" = "live" ]; then
             if [ -z "${FDK_AAC_REPO_URL:-}" ]; then
               echo "::warning::FDK_AAC_REPO_URL is not set; fdk-aac/b.sh will use its built-in default mirror."
             fi
@@ -156,9 +164,9 @@ jobs:
         run: |
           set -euo pipefail
 
-          variant='${{ inputs.variant }}'
-          arch='${{ inputs.arch }}'
-          buildType='${{ inputs.build_type }}'
+          variant='${{ matrix.variant }}'
+          arch='${{ matrix.arch }}'
+          buildType='${{ matrix.build_type }}'
           script='build-all.sh'
           if [ "$variant" = "live" ]; then
             script='build-all-live.sh'
@@ -204,21 +212,36 @@ jobs:
         shell: msys2 {0}
         run: |
           set -euo pipefail
-          config_log="$(cygpath -u "$GITHUB_WORKSPACE")/ffmpeg/build/ffbuild/config.log"
-          if [ -f "$config_log" ]; then
-            echo "===== ffmpeg config.log ====="
-            cat "$config_log"
-            echo "===== end config.log ====="
-          else
-            echo "config.log not found at $config_log"
+          workspace="$(cygpath -u "$GITHUB_WORKSPACE")"
+          deps="$(cygpath -u "$RUNNER_TEMP")/ffmpeg-src"
+          found=0
+          config_logs=(
+            "$workspace/ffmpeg/build/ffbuild/config.log"
+            "$deps/ffmpeg/build/ffbuild/config.log"
+            "$deps/ffmpeg/ffbuild/config.log"
+          )
+
+          for config_log in "${config_logs[@]}"; do
+            if [ -f "$config_log" ]; then
+              found=1
+              echo "===== ffmpeg config.log: $config_log ====="
+              cat "$config_log"
+              echo "===== end config.log ====="
+            else
+              echo "config.log not found at $config_log"
+            fi
+          done
+
+          if [ "$found" -eq 0 ]; then
+            echo "No ffmpeg config.log files were found."
           fi
 
       - name: Upload FFmpeg artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ffmpeg-${{ inputs.variant }}-${{ inputs.arch }}-${{ inputs.build_type }}-${{ github.run_number }}
+          name: ffmpeg-${{ matrix.variant }}-${{ matrix.arch }}-${{ matrix.build_type }}-${{ github.run_number }}
           path: |
-            ffmpeg-7.1.1-${{ inputs.arch }}-${{ inputs.build_type }}-*.zip
-            ffmpeg-live-7.1.1-${{ inputs.arch }}-${{ inputs.build_type }}-*.zip
+            ffmpeg-7.1.1-${{ matrix.arch }}-${{ matrix.build_type }}-*.zip
+            ffmpeg-live-7.1.1-${{ matrix.arch }}-${{ matrix.build_type }}-*.zip
           if-no-files-found: error
           retention-days: 14

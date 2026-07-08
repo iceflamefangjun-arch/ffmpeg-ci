@@ -24,7 +24,7 @@ case $1 in
       ;;
   static)
       BUILD="static"
-      OPTIMIZE="/O2 /MT /DNDEBUG /Z7 ${OPTIMIZE} /GF /Gy /Gw -flto=thin -fsplit-lto-unit"
+      OPTIMIZE="/O2 /MT /DNDEBUG /Z7 ${OPTIMIZE} /GF /Gy /Gw"
       CMAKE_BUILD_TYPE="Release"
       MSVC_RUNTIME="MultiThreaded"
       ;;

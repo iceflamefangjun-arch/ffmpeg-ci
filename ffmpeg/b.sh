@@ -255,21 +255,18 @@ do
           beenet_arch="x86"
           msvc_arch_cflags="--target=i686-pc-windows-msvc -m32 -msse3"
           msvc_arch_ldflags="/machine:x86 /stack:2097152 /safeseh:no"
-          ffmpeg_windres_flags="--target=pe-i386"
           ;;
       x64)
           ffmpeg_arch="x86_64"
           beenet_arch="x86_64"
           msvc_arch_cflags="--target=x86_64-pc-windows-msvc -m64 -msse3"
           msvc_arch_ldflags="/machine:x64 /stack:4194304"
-          ffmpeg_windres_flags="--target=pe-x86-64"
           ;;
       *)
           ffmpeg_arch="${ARCH}"
           beenet_arch="${ARCH}"
           msvc_arch_cflags=
           msvc_arch_ldflags=
-          ffmpeg_windres_flags=
           ;;
     esac
 
@@ -537,7 +534,6 @@ do
         --extra-libs="${LIBS}"              \
         --extra-cflags="${CFLAGS}"          \
         --extra-ldflags="${LDFLAGS}"        \
-        --extra-windresflags="${ffmpeg_windres_flags}" \
         --pkg-config-flags="--static" \
     || exit
 
