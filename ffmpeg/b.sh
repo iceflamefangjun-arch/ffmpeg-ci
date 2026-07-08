@@ -66,16 +66,16 @@ case $1 in
       ;;
   release)
       BUILD="release"
-      OPTIMIZE="/O2 /MD /DNDEBUG ${OPTIMIZE} /GF /Gy /Gw -flto=thin -fsplit-lto-unit"
+      # Thin LTO with lld-link on GitHub Actions fails to resolve symbols defined
+      # in NASM objects (e.g. ff_mlp_firorder_* / ff_mlp_iirorder_* in
+      # libavcodec/x86/mlpdsp.asm) and also exhausts runner disk space.
+      OPTIMIZE="/O2 /MD /DNDEBUG ${OPTIMIZE} /GF /Gy /Gw"
       CMAKE_BUILD_TYPE="Release"
-      is_ffmpeg_debug="disable-debug --enable-optimizations --enable-small --enable-lto"
+      is_ffmpeg_debug="disable-debug --enable-optimizations --enable-small"
       ;;
   static)
       BUILD="static"
-      # Thin LTO with lld-link on GitHub Actions fails to resolve symbols defined
-      # in NASM objects (e.g. ff_mlp_firorder_* / ff_mlp_iirorder_* in
-      # libavcodec/x86/mlpdsp.asm) and also exhausts runner disk space, so keep
-      # it disabled for the static build. Release build still uses it.
+      # Same as release: keep LTO disabled for CI stability.
       OPTIMIZE="/O2 /MT /DNDEBUG ${OPTIMIZE} /GF /Gy /Gw"
       CMAKE_BUILD_TYPE="Release"
       is_ffmpeg_debug="disable-debug --enable-optimizations --enable-small"
