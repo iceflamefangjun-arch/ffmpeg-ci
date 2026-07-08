@@ -269,6 +269,8 @@ do
           msvc_arch_ldflags=
           ;;
     esac
+    ffmpeg_windres_tool="$(windres_for_arch "${archs[i]}")"
+    echo "windres: ${ffmpeg_windres_tool}"
 
     ffmpeg_bluray_protocol_flag="--disable-protocol=bluray"
     ffmpeg_drm_protocol_flag="--disable-protocol=drm"
@@ -448,6 +450,7 @@ do
         --cxx="${CXX}"                      \
         --objcc="${CC}"                     \
         --ranlib="${RANLIB}"                \
+        --windres="${ffmpeg_windres_tool}"  \
         --prefix="${WSLPREFIX}"             \
         --${is_ffmpeg_debug}                \
         --enable-pic                        \
@@ -545,6 +548,7 @@ do
         "${build_config_h}" || exit
     build_config_mak="${CURRENTPATH}/build/ffbuild/config.mak"
     rewrite_file "${build_config_mak}" sed -e 's/^CP=.*/CP=cp/' "${build_config_mak}" || exit
+    grep -E '^(ARCH|CC|LD|WINDRES)=' "${build_config_mak}" || true
     
     make V=1 -j $(nproc) install || exit
     mkdir -p "${CURRENTPATH}/${OUTPUT}"

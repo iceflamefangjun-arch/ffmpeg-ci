@@ -364,6 +364,23 @@ msvc_libpath_flag() {
 	fi
 }
 
+windres_for_arch() {
+	local arch_name="$1"
+	local windres_tool="${WINDRES:-windres}"
+
+	case "${arch_name}" in
+	  x86|i386|i686)
+		  printf '%s --target=pe-i386\n' "${windres_tool}"
+		  ;;
+	  x64|x86_64|amd64)
+		  printf '%s --target=pe-x86-64\n' "${windres_tool}"
+		  ;;
+	  *)
+		  printf '%s\n' "${windres_tool}"
+		  ;;
+	esac
+}
+
 validate_build_environment() {
 	local missing=0
 	local tool

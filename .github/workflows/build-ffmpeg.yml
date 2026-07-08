@@ -207,7 +207,7 @@ jobs:
           df -h
           echo "::endgroup::"
 
-      - name: Print ffmpeg config.log on failure
+      - name: Print ffmpeg diagnostics on failure
         if: failure()
         shell: msys2 {0}
         run: |
@@ -215,10 +215,20 @@ jobs:
           workspace="$(cygpath -u "$GITHUB_WORKSPACE")"
           deps="$(cygpath -u "$RUNNER_TEMP")/ffmpeg-src"
           found=0
+          build_dirs=(
+            "$workspace/ffmpeg/build"
+            "$deps/ffmpeg/build"
+            "$deps/ffmpeg"
+          )
           config_logs=(
             "$workspace/ffmpeg/build/ffbuild/config.log"
             "$deps/ffmpeg/build/ffbuild/config.log"
             "$deps/ffmpeg/ffbuild/config.log"
+          )
+          config_maks=(
+            "$workspace/ffmpeg/build/ffbuild/config.mak"
+            "$deps/ffmpeg/build/ffbuild/config.mak"
+            "$deps/ffmpeg/ffbuild/config.mak"
           )
 
           for config_log in "${config_logs[@]}"; do
@@ -235,6 +245,34 @@ jobs:
           if [ "$found" -eq 0 ]; then
             echo "No ffmpeg config.log files were found."
           fi
+
+          for config_mak in "${config_maks[@]}"; do
+            if [ -f "$config_mak" ]; then
+              echo "===== ffmpeg config.mak toolchain: $config_mak ====="
+              grep -E '^(ARCH|CC|LD|WINDRES)=' "$config_mak" || true
+              echo "===== end config.mak toolchain ====="
+            else
+              echo "config.mak not found at $config_mak"
+            fi
+          done
+
+          for build_dir in "${build_dirs[@]}"; do
+            if [ -d "$build_dir" ]; then
+              echo "===== ffmpeg resource object diagnostics: $build_dir ====="
+              while IFS= read -r -d '' obj; do
+                echo "--- $obj"
+                if command -v file >/dev/null 2>&1; then
+                  file "$obj" || true
+                fi
+                if command -v llvm-readobj >/dev/null 2>&1; then
+                  llvm-readobj --file-headers "$obj" | sed -n '1,40p' || true
+                fi
+              done < <(find "$build_dir" -name '*res.o' -print0 2>/dev/null)
+              echo "===== end resource object diagnostics ====="
+            else
+              echo "build dir not found at $build_dir"
+            fi
+          done
 
       - name: Upload FFmpeg artifact
         uses: actions/upload-artifact@v4
