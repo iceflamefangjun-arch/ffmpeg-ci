@@ -255,12 +255,14 @@ do
           beenet_arch="x86"
           msvc_arch_cflags="--target=i686-pc-windows-msvc -m32 -msse3"
           msvc_arch_ldflags="/machine:x86 /stack:2097152 /safeseh:no"
+          export WINDRES="i686-w64-mingw32-windres"
           ;;
       x64)
           ffmpeg_arch="x86_64"
           beenet_arch="x86_64"
           msvc_arch_cflags="--target=x86_64-pc-windows-msvc -m64 -msse3"
           msvc_arch_ldflags="/machine:x64 /stack:4194304"
+          export WINDRES="x86_64-w64-mingw32-windres"
           ;;
       *)
           ffmpeg_arch="${ARCH}"
