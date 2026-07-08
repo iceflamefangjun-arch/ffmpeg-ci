@@ -36,5 +36,6 @@ if [ $? -ne 0 ]; then
   echo "x264 live output copy failed." >&2
   exit 1
 fi
+sed -i 's|^prefix=.*|prefix=${pcfiledir}/../..|' "${DST_OUTPUT}/lib/pkgconfig/"*.pc 2>/dev/null || true
 
 ls -l "${DST_OUTPUT}/lib/libx264.lib"

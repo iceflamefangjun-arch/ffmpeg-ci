@@ -75,6 +75,24 @@ pkg_module_ready() {
     pkg-config --exists ${pkg_query} >/dev/null 2>&1
 }
 
+pkg_module_header_ready() {
+    local module="$1"
+    local header="$2"
+    local cflags flag include_dir
+
+    cflags="$(pkg-config --cflags "${module}" 2>/dev/null)" || return 1
+    for flag in ${cflags}; do
+        case "${flag}" in
+          -I*)
+              include_dir="${flag#-I}"
+              [ -f "${include_dir}/${header}" ] && return 0
+              ;;
+        esac
+    done
+
+    return 1
+}
+
 build_enable_flags() {
     local kind="$1"
     shift
@@ -405,12 +423,12 @@ do
         echo "libmfx metadata missing/incompatible (<1.28 or >=2.0) for ${ARCH}: disabling QSV encoders."
     fi
 
-    if pkg_module_ready "${ffnvcodec_pc_dir}" "ffnvcodec"; then
+    if pkg_module_ready "${ffnvcodec_pc_dir}" "ffnvcodec >= 12.1.14.0" && pkg_module_header_ready "ffnvcodec" "ffnvcodec/nvEncodeAPI.h"; then
         ffmpeg_live_nvenc_flag="--enable-nvenc"
         ffmpeg_live_encoder_flags="${ffmpeg_live_encoder_flags} --enable-encoder=h264_nvenc --enable-encoder=hevc_nvenc"
         ffmpeg_live_video_encoder_ready=1
     else
-        echo "ffnvcodec metadata missing or incomplete for ${ARCH}: disabling NVENC encoders."
+        echo "ffnvcodec metadata or headers missing/incompatible for ${ARCH}: disabling NVENC encoders."
     fi
 
     # Media Foundation encoders are always available on Windows target

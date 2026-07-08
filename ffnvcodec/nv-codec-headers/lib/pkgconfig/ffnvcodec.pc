@@ -1,4 +1,4 @@
-prefix=/mnt/c/Users/rainp/source/shplayer6-x64/ijkplayer/clang-shell/ffnvcodec/nv-codec-headers
+prefix=${pcfiledir}/../..
 includedir=${prefix}/include
 
 Name: ffnvcodec
