@@ -478,13 +478,11 @@ do
         --enable-swscale                    \
         --disable-swscale-alpha             \
         --disable-gray                      \
-        --enable-avdevice                   \
         --disable-postproc                  \
         --enable-avfilter                   \
         --enable-network                    \
         --enable-hwaccels                   \
         --enable-decoders                   \
-        --enable-encoders                   \
         --enable-demuxers                   \
         --enable-bsfs                       \
         --enable-parsers                    \
@@ -512,6 +510,7 @@ do
         --disable-protocol=unix             \
         --disable-devices                   \
         --disable-filters                   \
+        --disable-encoders                  \
         --enable-filter=atempo              \
         --enable-filter=aresample           \
         --enable-filter=asetrate            \
