@@ -229,6 +229,14 @@ for arg in "\$@"; do
         else
             continue
         fi
+    # Short flag (e.g. -I, -L, /I) immediately followed by a Windows
+    # drive-letter path like D:/... or D:\...  The drive letter is part of
+    # the path, not the flag name.  Pass through unchanged — clang-cl and
+    # lld-link handle Windows paths natively.  This must be checked BEFORE
+    # the colon regex below, which would otherwise eat the drive letter
+    # (e.g. -ID:/a/... → -ID: + /a/... → -ID:A:\... — wrong drive!).
+    elif [[ "\${arg}" =~ ^[-/]([A-Za-z])([a-zA-Z]:[\\\\/].*)\$ ]]; then
+        converted="\${arg}"
     # Option with an attached path using a colon, e.g. /LIBPATH:/d/a/... or -out:/d/a/...
     elif [[ "\${arg}" =~ ^([-/][A-Za-z]+:)(/[a-zA-Z]/.*)\$ ]]; then
         opt="\${BASH_REMATCH[1]}"

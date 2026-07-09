@@ -219,6 +219,33 @@ for patch_file in "${FFMPEG_PATCHES[@]}"; do
     patch -d "${FFMPEG_SRC_DIR}" -p1 <"${CURRENTPATH}/${patch_file}" || exit
 done
 
+# Clang on Windows cannot resolve symbols defined in function-local inline
+# assembly when they are referenced from outside that assembly (e.g.
+# ff_mlp_firorder_* / ff_mlp_iirorder_* in libavcodec/x86/mlpdsp.asm,
+# referenced from mlpdsp_init.c). The player build applies the same fix.
+# See LLVM issues #64127 / #76046.
+if [ "${BUILD}" = "static" ] || [ "${BUILD}" = "release" ]; then
+    echo "Disabling inline_asm_nonlocal_labels for Clang/Windows..."
+    ffmpeg_configure="${FFMPEG_SRC_DIR}/configure"
+    awk '
+        /disable inline_asm_direct_symbol_refs/ && !done {
+            print
+            print "    # Work around LLVM ThinLTO bug on Windows with nonlocal asm labels"
+            print "    if [ \"$cc_type\" = \"clang\" ]; then"
+            print "        case \"$target_os\" in"
+            print "            mingw32|win32)"
+            print "                disable inline_asm_nonlocal_labels"
+            print "                ;;"
+            print "        esac"
+            print "    fi"
+            done = 1
+            next
+        }
+        { print }
+    ' "${ffmpeg_configure}" > "${ffmpeg_configure}.tmp" && \
+    mv -f "${ffmpeg_configure}.tmp" "${ffmpeg_configure}" || exit
+fi
+
 ############################################################################################
 for ((i=0; i<${#archs[@]}; i++))
 do
@@ -331,6 +358,7 @@ do
         libmfx_pc_dir="${libmfx_dep_root}/lib/pkgconfig"
     fi
     ffnvcodec_pc_dir="${CURRENTPATH}/../ffnvcodec/nv-codec-headers/lib/pkgconfig"
+    ffnvcodec_include_dir="${CURRENTPATH}/../ffnvcodec/nv-codec-headers/include"
 
     if [ ! -d "${pthread_include_dir}" ] || [ ! -f "${pthread_lib_file}" ]; then
         echo "pthread-win32 include or library missing for ${ARCH}." >&2
@@ -448,6 +476,15 @@ do
     export CPPFLAGS="${CPPFLAGS} ${ffmpeg_live_optional_cppflags}"
     export CPPFLAGS="${CPPFLAGS} -I${pthread_include_dir}"
     export CPPFLAGS="${CPPFLAGS} -I${jsonc_include_dir}"
+
+    # Add ffnvcodec include path directly in Unix format so the clang-cl
+    # wrapper can convert it correctly.  pkg-config on MSYS2 may output a
+    # Windows-style path (D:/a/...) which the wrapper now handles, but
+    # adding it here as well ensures the headers are always findable.
+    if [ -d "${ffnvcodec_include_dir}" ]; then
+        export CFLAGS="${CFLAGS} -I${ffnvcodec_include_dir}"
+        export CPPFLAGS="${CPPFLAGS} -I${ffnvcodec_include_dir}"
+    fi
 
     if [ -n "${ffmpeg_live_optional_lib_path}" ]; then
         append_msvc_lib_path "${ffmpeg_live_optional_lib_path}"

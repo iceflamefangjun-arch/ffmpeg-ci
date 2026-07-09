@@ -36,6 +36,16 @@ if [ $? -ne 0 ]; then
   echo "x264 live output copy failed." >&2
   exit 1
 fi
-sed -i 's|^prefix=.*|prefix=${pcfiledir}/../..|' "${DST_OUTPUT}/lib/pkgconfig/"*.pc 2>/dev/null || true
+for pc_file in "${DST_OUTPUT}/lib/pkgconfig/"*.pc; do
+    [ -f "${pc_file}" ] || continue
+    tmp_pc="$(mktemp)"
+    sed \
+        -e 's|^prefix=.*|prefix=${pcfiledir}/../..|' \
+        -e 's|^exec_prefix=.*|exec_prefix=${prefix}|' \
+        -e 's|^libdir=.*|libdir=${prefix}/lib|' \
+        -e 's|^includedir=.*|includedir=${prefix}/include|' \
+        "${pc_file}" > "${tmp_pc}" && cat "${tmp_pc}" > "${pc_file}"
+    rm -f "${tmp_pc}"
+done
 
 ls -l "${DST_OUTPUT}/lib/libx264.lib"
