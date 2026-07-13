@@ -89,6 +89,12 @@ do
           msvc_arch_ldflags=(
           )
           ;;
+      arm64)
+          msvc_arch_cflags="--target=aarch64-pc-windows-msvc"
+          msvc_arch_ldflags=(
+            "/machine:arm64"
+          )
+          ;;
       *)
           msvc_arch_cflags=
           msvc_arch_ldflags=

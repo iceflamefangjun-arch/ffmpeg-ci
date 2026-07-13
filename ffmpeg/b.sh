@@ -248,6 +248,7 @@ do
     echo "INCLUDE:$INCLUDE"
     echo "LIB:$LIB"
 
+    ffmpeg_as_args=()
     case ${ARCH} in
       x86)
           ffmpeg_arch="x86"
@@ -260,6 +261,13 @@ do
           beenet_arch="x86_64"
           msvc_arch_cflags="--target=x86_64-pc-windows-msvc -m64 -msse3"
           msvc_arch_ldflags="/machine:x64 /stack:4194304"
+          ;;
+      arm64)
+          ffmpeg_arch="aarch64"
+          beenet_arch="aarch64"
+          msvc_arch_cflags="--target=aarch64-pc-windows-msvc -DADLER32_SIMD_NEON"
+          msvc_arch_ldflags="/machine:arm64"
+          ffmpeg_as_args=(--as="${CC}")
           ;;
       *)
           ffmpeg_arch="${ARCH}"
@@ -381,6 +389,9 @@ do
     export CFLAGS="${OPTIMIZE} ${msvc_arch_cflags} -fuse-ld=lld -fms-compatibility"
     export CXXFLAGS="${CFLAGS} ${CXX_OPTIMIZE} /EHsc -std:c++11"
     export LDFLAGS="${msvc_arch_ldflags} /nologo /subsystem:console"
+    if [ "${ARCH}" = "arm64" ]; then
+        export ASFLAGS="${CFLAGS}"
+    fi
     export CPPFLAGS="${BASE_CPPFLAGS}"
     export LIBS="${BASE_LIBS}"
     
@@ -444,6 +455,7 @@ do
         --target-os=win32                   \
         --nm="${NM}"                        \
         --ar="${AR}"                        \
+        "${ffmpeg_as_args[@]}"              \
         --ld="${LD}"                        \
         --strip="${STRIP}"                  \
         --cc="${CC}"                        \

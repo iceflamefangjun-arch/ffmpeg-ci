@@ -6,10 +6,10 @@ CURRENTPATH="${SCRIPT_DIR}"
 TODAY=$(date +%y%m%d)
 TARGET_ARCH=${1:-all}
 BUILD_TYPE=${2:-static}
-USAGE="Usage: $0 [x86|x64|all] [debug|release|static] (defaults: all static)"
+USAGE="Usage: $0 [x86|x64|arm64|all] [debug|release|static] (defaults: all static)"
 
 case "${TARGET_ARCH}" in
-  x86|Win32|win32|x64|amd64|AMD64|all|both) ;;
+  x86|Win32|win32|x64|amd64|AMD64|arm64|aarch64|ARM64|all|both) ;;
   *) echo "${USAGE}" >&2; exit 1 ;;
 esac
 

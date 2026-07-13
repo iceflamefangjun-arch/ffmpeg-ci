@@ -11,6 +11,10 @@ USAGE="Usage: $0 [x86|x64] [debug|release|static] (defaults: x64 static)"
 case "${TARGET_ARCH}" in
   x86|Win32|win32) TARGET_ARCH="x86" ;;
   x64|amd64|AMD64) TARGET_ARCH="x64" ;;
+  arm64|aarch64|ARM64)
+    echo "Live build does not support ARM64; use build-all.sh for the player build." >&2
+    exit 1
+    ;;
   *)
     echo "${USAGE}" >&2
     exit 1

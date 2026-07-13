@@ -19,6 +19,7 @@ on:
         options:
           - x64
           - x86
+          - arm64
       build_type:
         description: Build type
         required: true
@@ -167,6 +168,12 @@ jobs:
           variant='${{ matrix.variant }}'
           arch='${{ matrix.arch }}'
           buildType='${{ matrix.build_type }}'
+
+          if [ "$variant" = "live" ] && [ "$arch" = "arm64" ]; then
+            echo "ARM64 is supported by the player build only." >&2
+            exit 1
+          fi
+
           script='build-all.sh'
           if [ "$variant" = "live" ]; then
             script='build-all-live.sh'

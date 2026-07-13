@@ -383,6 +383,9 @@ windres_for_arch() {
 	  x64|x86_64|amd64)
 		  printf '%s --target=pe-x86-64\n' "${windres_tool}"
 		  ;;
+	  arm64|aarch64|ARM64)
+		  printf '%s --target=pe-aarch64-little\n' "${windres_tool}"
+		  ;;
 	  *)
 		  printf '%s\n' "${windres_tool}"
 		  ;;
@@ -449,7 +452,12 @@ cmake_tool_path() {
 
 run_cmake_configure() {
 	local generator_args=()
+	local target_args=()
 	local ninja_path=
+
+	if [ "${ARCH:-}" = "arm64" ]; then
+		target_args=("-DCMAKE_SYSTEM_PROCESSOR=ARM64")
+	fi
 
 	if command -v ninja >/dev/null 2>&1; then
 		ninja_path="$(command -v ninja)"
@@ -466,7 +474,8 @@ run_cmake_configure() {
 	fi
 
 	echo "CMake generator: ${generator_args[*]:-(default)}"
-	cmake "${generator_args[@]}" "-DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY" "$@" || exit
+	cmake "${generator_args[@]}" "${target_args[@]}" \
+		"-DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY" "$@" || exit
 }
 
 run_cmake_build_install() {
@@ -486,12 +495,16 @@ set_target_archs() {
 		  archs=('x64')
 		  targets=('x86_64-w64-mingw32')
 		  ;;
+	  arm64|aarch64|ARM64)
+		  archs=('arm64')
+		  targets=('aarch64-w64-mingw32')
+		  ;;
 	  all|both)
 		  archs=('x86' 'x64')
 		  targets=('i686-w64-mingw32' 'x86_64-w64-mingw32')
 		  ;;
 	  *)
-		  echo "Only support arch [x86|x64|all], got: ${requested}" >&2
+		  echo "Only support arch [x86|x64|arm64|all], got: ${requested}" >&2
 		  exit 1
 		  ;;
 	esac
