@@ -106,8 +106,19 @@ do
           ;;
     esac
 
+    compat_include_dir="${CURRENTPATH}/include"
+    if [ "${ARCH}" = "arm64" ]; then
+        # The bundled stdint.h predates clang-cl's ARM64 headers and shadows
+        # the Windows SDK stdint.h. Keep the other Windows compatibility
+        # headers, but let clang-cl resolve its native stdint.h first.
+        compat_include_dir="${CURRENTPATH}/build/compat-include"
+        mkdir -p "${compat_include_dir}"
+        cp -a "${CURRENTPATH}/include/." "${compat_include_dir}/" || exit
+        rm -f "${compat_include_dir}/stdint.h"
+    fi
+
     export CFLAGS="${OPTIMIZE} ${msvc_arch_cflags} -fuse-ld=lld -fms-compatibility"
-    export CFLAGS="${CFLAGS} -I${CURRENTPATH}/include"
+    export CFLAGS="${CFLAGS} -I${compat_include_dir}"
     export CXXFLAGS="${CFLAGS} ${CXX_OPTIMIZE} /EHsc -std:c++11"
     #export LDFLAGS="${msvc_arch_ldflags}"
 
