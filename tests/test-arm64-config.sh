@@ -39,9 +39,19 @@ assert_contains ffmpeg/b.sh 'beenet_arch="aarch64"'
 assert_contains ffmpeg/b.sh 'ASFLAGS="\$\{CFLAGS\}"'
 assert_contains ffmpeg/b.sh 'ffmpeg_as_args=\(--as="\$\{CC\}"\)'
 assert_contains pthread-win32/b.sh 'set\(TARGET_ARCH "ARM64"\)'
-assert_contains libdvdread/b.sh 'compat_include_dir="\$\{CURRENTPATH\}/build/compat-include"'
-assert_contains libdvdread/b.sh 'rm -f "\$\{compat_include_dir\}/stdint.h"'
+assert_contains libdvdread/include/stdint.h 'defined\(__clang__\) && defined\(_M_ARM64\)'
+assert_contains libdvdread/include/stdint.h '#include_next <stdint.h>'
 assert_contains zlib/b.sh "ADLER32_SIMD_NEON"
+
+standard_shadow_headers="$({
+    git -C "${ROOT_DIR}" ls-files |
+        grep -E '(^|/)include/(stdint|inttypes|wchar|limits|stddef)\.h$' || true
+} | sort)"
+if [ "${standard_shadow_headers}" != "libdvdread/include/stdint.h" ]; then
+    echo "Unexpected standard headers may shadow clang-cl/Windows SDK headers:" >&2
+    printf '%s\n' "${standard_shadow_headers}" >&2
+    exit 1
+fi
 
 for script in \
     env_config.sh \

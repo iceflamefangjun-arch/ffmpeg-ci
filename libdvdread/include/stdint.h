@@ -1,3 +1,8 @@
+#if defined(__clang__) && defined(_M_ARM64)
+/* clang-cl provides the ARM64 integer types required by its intrinsic headers. */
+#include_next <stdint.h>
+#else
+
 // ISO C9x  compliant stdint.h for Microsoft Visual Studio
 // Based on ISO/IEC 9899:TC2 Committee draft (May 6, 2005) WG14/N1124 
 // 
@@ -254,3 +259,5 @@ typedef uint64_t  uintmax_t;
 
 
 #endif // _MSC_STDINT_H_ ]
+
+#endif /* defined(__clang__) && defined(_M_ARM64) */
