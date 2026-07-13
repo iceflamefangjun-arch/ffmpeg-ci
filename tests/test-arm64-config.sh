@@ -38,6 +38,7 @@ assert_contains ffmpeg/b.sh 'ffmpeg_arch="aarch64"'
 assert_contains ffmpeg/b.sh 'beenet_arch="aarch64"'
 assert_contains ffmpeg/b.sh 'ASFLAGS="\$\{CFLAGS\}"'
 assert_contains ffmpeg/b.sh 'ffmpeg_as_args=\(--as="\$\{CC\}"\)'
+assert_contains pthread-win32/b.sh 'set\(TARGET_ARCH "ARM64"\)'
 assert_contains zlib/b.sh "ADLER32_SIMD_NEON"
 
 for script in \

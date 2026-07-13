@@ -52,15 +52,17 @@ trap "cd ${DEPENDSPATH}/pthread-win32 && git reset --hard" EXIT
 patch -d ${DEPENDSPATH}/pthread-win32 -p1 <<EOF || exit
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -12,8 +12,9 @@ include(CMakePackageConfigHelpers)
+@@ -12,8 +12,11 @@ include(CMakePackageConfigHelpers)
  #################################
  # Target Arch                   #
  #################################
 -include(cmake/target_arch.cmake)
 -get_target_arch(TARGET_ARCH)
-+#include(cmake/target_arch.cmake)
-+#get_target_arch(TARGET_ARCH)
-+set(TARGET_ARCH \$ENV{ARCH})
++if("\$ENV{ARCH}" STREQUAL "arm64")
++  set(TARGET_ARCH "ARM64")
++else()
++  set(TARGET_ARCH \$ENV{ARCH})
++endif()
  
  if(TARGET_ARCH STREQUAL "ARM")
    add_definitions(-DPTW32_ARCHARM -D_ARM_WINAPI_PARTITION_DESKTOP_SDK_AVAILABLE=1)
