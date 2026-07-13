@@ -269,6 +269,13 @@ do
           msvc_arch_ldflags=
           ;;
     esac
+
+    ffmpeg_lto_flag=
+    if [ "${ARCH}" = "x86" ] && { [ "${BUILD}" = "release" ] || [ "${BUILD}" = "static" ]; }; then
+        ffmpeg_lto_flag="--enable-lto=thin"
+        echo "FFmpeg ThinLTO enabled for ${ARCH} ${BUILD}"
+    fi
+
     ffmpeg_windres_tool="$(windres_for_arch "${archs[i]}")"
     echo "windres: ${ffmpeg_windres_tool}"
 
@@ -453,6 +460,7 @@ do
         --windres="${ffmpeg_windres_tool}"  \
         --prefix="${WSLPREFIX}"             \
         --${is_ffmpeg_debug}                \
+        ${ffmpeg_lto_flag}                  \
         --enable-pic                        \
         --enable-neon                       \
         --enable-asm                        \
