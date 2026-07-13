@@ -277,7 +277,7 @@ do
           ;;
     esac
 
-    ffmpeg_windres_tool="$(windres_for_arch "${archs[i]}")"
+    ffmpeg_windres_tool="$(windres_for_arch "${archs[i]}")" || exit 1
     echo "windres: ${ffmpeg_windres_tool}"
 
     ffmpeg_bluray_protocol_flag="--disable-protocol=bluray"

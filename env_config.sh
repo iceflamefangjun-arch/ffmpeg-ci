@@ -304,6 +304,7 @@ export_msvc_environment() {
 	export LLVM_NM_TOOL="${LLVM_NM_TOOL:-llvm-nm}"
 	export LLVM_MT_TOOL="${LLVM_MT_TOOL:-llvm-mt}"
 	export LLVM_RC_TOOL="${LLVM_RC_TOOL:-llvm-rc}"
+	export LLVM_WINDRES_TOOL="${LLVM_WINDRES_TOOL:-llvm-windres}"
 	export LLVM_RANLIB_TOOL="${LLVM_RANLIB_TOOL:-llvm-ranlib}"
 	export LLVM_STRIP_TOOL="${LLVM_STRIP_TOOL:-llvm-strip}"
 
@@ -384,7 +385,11 @@ windres_for_arch() {
 		  printf '%s --target=pe-x86-64\n' "${windres_tool}"
 		  ;;
 	  arm64|aarch64|ARM64)
-		  printf '%s --target=pe-aarch64-little\n' "${windres_tool}"
+		  if ! command -v "${LLVM_WINDRES_TOOL}" >/dev/null 2>&1; then
+			  echo "Required LLVM ARM64 resource compiler not found in PATH: ${LLVM_WINDRES_TOOL}" >&2
+			  return 1
+		  fi
+		  printf '%s --target=aarch64-pc-windows-msvc\n' "${LLVM_WINDRES_TOOL}"
 		  ;;
 	  *)
 		  printf '%s\n' "${windres_tool}"
