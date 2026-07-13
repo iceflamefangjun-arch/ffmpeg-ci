@@ -115,21 +115,21 @@ case $1 in
       OPTIMIZE="/Od /MDd /D_DEBUG ${OPTIMIZE}"
       CMAKE_BUILD_TYPE="Debug"
       is_ffmpeg_debug="enable-debug --disable-optimizations --disable-small"
+      ffmpeg_lto_flag=
       ;;
   release)
       BUILD="release"
-      # Keep LTO disabled on GitHub Actions for the same stability reasons as
-      # the player build: clang-cl/lld-link can hit NASM symbol and disk issues.
       OPTIMIZE="/O2 /MD /DNDEBUG ${OPTIMIZE} /GF /Gy /Gw"
       CMAKE_BUILD_TYPE="Release"
       is_ffmpeg_debug="disable-debug --enable-optimizations --enable-small"
+      ffmpeg_lto_flag="--enable-lto=thin"
       ;;
   static)
       BUILD="static"
-      # Same as release: keep LTO disabled for CI stability.
       OPTIMIZE="/O2 /MT /DNDEBUG ${OPTIMIZE} /GF /Gy /Gw"
       CMAKE_BUILD_TYPE="Release"
       is_ffmpeg_debug="disable-debug --enable-optimizations --enable-small"
+      ffmpeg_lto_flag="--enable-lto=thin"
       ;;
   *)
       echo "Only support [debug|release|static]" >&2; exit
@@ -511,6 +511,7 @@ do
         --windres="${ffmpeg_windres_tool}"  \
         --prefix="${WSLPREFIX}"             \
         --${is_ffmpeg_debug}                \
+        ${ffmpeg_lto_flag}                  \
         --enable-pic                        \
         --enable-neon                       \
         --enable-asm                        \

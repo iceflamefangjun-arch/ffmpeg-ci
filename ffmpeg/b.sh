@@ -63,22 +63,21 @@ case $1 in
       OPTIMIZE="/Od /MDd /D_DEBUG ${OPTIMIZE}"
       CMAKE_BUILD_TYPE="Debug"
       is_ffmpeg_debug="enable-debug --disable-optimizations --disable-small"
+      ffmpeg_lto_flag=
       ;;
   release)
       BUILD="release"
-      # Thin LTO with lld-link on GitHub Actions fails to resolve symbols defined
-      # in NASM objects (e.g. ff_mlp_firorder_* / ff_mlp_iirorder_* in
-      # libavcodec/x86/mlpdsp.asm) and also exhausts runner disk space.
       OPTIMIZE="/O2 /MD /DNDEBUG ${OPTIMIZE} /GF /Gy /Gw"
       CMAKE_BUILD_TYPE="Release"
       is_ffmpeg_debug="disable-debug --enable-optimizations --enable-small"
+      ffmpeg_lto_flag="--enable-lto=thin"
       ;;
   static)
       BUILD="static"
-      # Same as release: keep LTO disabled for CI stability.
       OPTIMIZE="/O2 /MT /DNDEBUG ${OPTIMIZE} /GF /Gy /Gw"
       CMAKE_BUILD_TYPE="Release"
       is_ffmpeg_debug="disable-debug --enable-optimizations --enable-small"
+      ffmpeg_lto_flag="--enable-lto=thin"
       ;;
   *)
       echo "Only support [debug|release|static]" >&2; exit
@@ -269,12 +268,6 @@ do
           msvc_arch_ldflags=
           ;;
     esac
-
-    ffmpeg_lto_flag=
-    if [ "${ARCH}" = "x86" ] && { [ "${BUILD}" = "release" ] || [ "${BUILD}" = "static" ]; }; then
-        ffmpeg_lto_flag="--enable-lto=thin"
-        echo "FFmpeg ThinLTO enabled for ${ARCH} ${BUILD}"
-    fi
 
     ffmpeg_windres_tool="$(windres_for_arch "${archs[i]}")"
     echo "windres: ${ffmpeg_windres_tool}"
