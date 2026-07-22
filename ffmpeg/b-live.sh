@@ -219,30 +219,32 @@ for patch_file in "${FFMPEG_PATCHES[@]}"; do
     patch -d "${FFMPEG_SRC_DIR}" -p1 <"${CURRENTPATH}/${patch_file}" || exit
 done
 
-# Clang on Windows cannot resolve symbols defined in function-local inline
-# assembly when they are referenced from outside that assembly (e.g.
+# clang-cl is detected by FFmpeg's configure script as an MSVC-compatible
+# compiler rather than as clang. Therefore, its upstream clang-only ThinLTO
+# workaround does not run. ThinLTO on Windows cannot resolve symbols defined
+# in function-local inline assembly when they are referenced from outside that
+# assembly (e.g.
 # ff_mlp_firorder_* / ff_mlp_iirorder_* in libavcodec/x86/mlpdsp.asm,
 # referenced from mlpdsp_init.c). The player build applies the same fix.
 # See LLVM issues #64127 / #76046.
 if [ "${BUILD}" = "static" ] || [ "${BUILD}" = "release" ]; then
-    echo "Disabling inline_asm_nonlocal_labels for Clang/Windows..."
+    echo "Disabling inline_asm_nonlocal_labels for Windows ThinLTO..."
     ffmpeg_configure="${FFMPEG_SRC_DIR}/configure"
     awk '
         /disable inline_asm_direct_symbol_refs/ && !done {
             print
             print "    # Work around LLVM ThinLTO bug on Windows with nonlocal asm labels"
-            print "    if [ \"$cc_type\" = \"clang\" ]; then"
-            print "        case \"$target_os\" in"
-            print "            mingw32|win32)"
-            print "                disable inline_asm_nonlocal_labels"
-            print "                ;;"
-            print "        esac"
-            print "    fi"
+            print "    disable inline_asm_nonlocal_labels"
             done = 1
             next
         }
         { print }
-    ' "${ffmpeg_configure}" > "${ffmpeg_configure}.tmp" && \
+    ' "${ffmpeg_configure}" > "${ffmpeg_configure}.tmp" || exit
+    if ! grep -A 1 '^    # Work around LLVM ThinLTO bug on Windows with nonlocal asm labels$' "${ffmpeg_configure}.tmp" | grep -q '^    disable inline_asm_nonlocal_labels$'; then
+        echo "Failed to apply the Windows ThinLTO inline-assembly workaround." >&2
+        rm -f "${ffmpeg_configure}.tmp"
+        exit 1
+    fi
     mv -f "${ffmpeg_configure}.tmp" "${ffmpeg_configure}" || exit
 fi
 
