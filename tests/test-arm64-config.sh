@@ -17,10 +17,36 @@ assert_contains() {
 assert_contains env_config.sh "archs=\('arm64'\)"
 assert_contains env_config.sh "targets=\('aarch64-w64-mingw32'\)"
 assert_contains env_config.sh "CMAKE_SYSTEM_PROCESSOR=ARM64"
+assert_contains env_config.sh 'LLVM_RC_TOOL'
+assert_contains env_config.sh 'llvm-rc'
 assert_contains env_config.sh 'LLVM_WINDRES_TOOL'
 assert_contains env_config.sh 'llvm-windres'
+assert_contains env_config.sh 'generate_llvm_rc_windres_wrapper'
+assert_contains env_config.sh 'llvm-rc-windres'
 assert_contains env_config.sh 'target=aarch64-pc-windows-msvc'
 assert_contains ffmpeg/b.sh 'ffmpeg_windres_tool="\$\(windres_for_arch "\$\{archs\[i\]\}"\)" \|\| exit 1'
+
+# Verify the generated llvm-rc adapter preserves FFmpeg's relevant windres
+# arguments without needing an LLVM installation or a full cross-build.
+eval "$(sed -n '/^generate_llvm_rc_windres_wrapper()/,/^export_msvc_environment()/p' "${ROOT_DIR}/env_config.sh" | sed '$d')"
+wrapper_test_dir="$(mktemp -d)"
+cleanup_wrapper_test() {
+    rm -rf "${wrapper_test_dir}"
+}
+trap cleanup_wrapper_test EXIT
+
+DEPENDSPATH="${wrapper_test_dir}"
+wrapper_path="$(generate_llvm_rc_windres_wrapper)"
+wrapped_args="$(LLVM_RC_TOOL=/bin/echo "${wrapper_path}" -I include -DTEST=1 --preprocessor-arg -MMD -o output.o input.rc)"
+case "${wrapped_args}" in
+  '-nologo -I include -DTEST=1 /fo output.o input.rc'|\
+  -nologo\ -I\ */include\ -DTEST=1\ /fo\ */output.o\ */input.rc)
+      ;;
+  *)
+      echo "llvm-rc windres adapter passed unexpected arguments: ${wrapped_args}" >&2
+      exit 1
+      ;;
+esac
 
 for file in \
     json-c/b.sh \

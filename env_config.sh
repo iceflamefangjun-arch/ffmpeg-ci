@@ -257,6 +257,94 @@ WRAPPER_EOF
 	chmod +x "${wrapper}"
 }
 
+generate_llvm_rc_windres_wrapper() {
+	local wrapper_bin_dir="${DEPENDSPATH}/bin"
+	local wrapper="${wrapper_bin_dir}/llvm-rc-windres"
+
+	mkdir -p "${wrapper_bin_dir}"
+
+	# FFmpeg invokes windres using the GNU windres interface even when its
+	# compiler probe selects MSVC mode.  llvm-rc is available on the Windows
+	# runner, but it uses rc.exe-style options, so provide the small adapter
+	# here rather than requiring the unavailable llvm-windres binary.
+	cat > "${wrapper}" <<'WRAPPER_EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+rc_tool="${LLVM_RC_TOOL:-llvm-rc}"
+output=
+source_file=
+rc_args=()
+
+to_resource_path() {
+    local path_value="$1"
+
+    if command -v cygpath >/dev/null 2>&1; then
+        cygpath -aw "${path_value}" | tr '\\' '/'
+    else
+        printf '%s\n' "${path_value}"
+    fi
+}
+
+if [ "${1:-}" = "--version" ]; then
+    exec "${rc_tool}" -?
+fi
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --preprocessor-arg|--target)
+          # FFmpeg passes dependency-generator options through this interface.
+          # llvm-rc does not support them and receives the required -D/-I flags
+          # directly below.
+          [ "$#" -ge 2 ] || exit 2
+          shift 2
+          ;;
+      --target=*)
+          shift
+          ;;
+      -o)
+          [ "$#" -ge 2 ] || exit 2
+          output="$2"
+          shift 2
+          ;;
+      -o*)
+          output="${1#-o}"
+          shift
+          ;;
+      -I)
+          [ "$#" -ge 2 ] || exit 2
+          rc_args+=("-I" "$(to_resource_path "$2")")
+          shift 2
+          ;;
+      -I*)
+          rc_args+=("-I" "$(to_resource_path "${1#-I}")")
+          shift
+          ;;
+      -D*)
+          rc_args+=("$1")
+          shift
+          ;;
+      *.rc)
+          source_file="$1"
+          shift
+          ;;
+      *)
+          shift
+          ;;
+    esac
+done
+
+if [ -z "${output}" ] || [ -z "${source_file}" ]; then
+    echo "llvm-rc-windres: expected an output path and a .rc source file" >&2
+    exit 2
+fi
+
+exec "${rc_tool}" -nologo "${rc_args[@]}" /fo "$(to_resource_path "${output}")" "$(to_resource_path "${source_file}")"
+WRAPPER_EOF
+	chmod +x "${wrapper}"
+	printf '%s\n' "${wrapper}"
+}
+
 export_msvc_environment() {
 	if [ "${BUILD_HOST}" = "msys2" ]; then
 		export INCLUDE="$(to_native_path "${WINSDKINC}/winrt");$(to_native_path "${WINSDKINC}/ucrt");$(to_native_path "${WINSDKINC}/um");$(to_native_path "${WINSDKINC}/shared");$(to_native_path "${VCINC}")"
@@ -376,6 +464,8 @@ msvc_libpath_flag() {
 windres_for_arch() {
 	local arch_name="$1"
 	local windres_tool="${WINDRES:-windres}"
+	local llvm_rc_tool="${LLVM_RC_TOOL:-llvm-rc}"
+	local llvm_windres_tool="${LLVM_WINDRES_TOOL:-llvm-windres}"
 
 	case "${arch_name}" in
 	  x86|i386|i686)
@@ -385,11 +475,14 @@ windres_for_arch() {
 		  printf '%s --target=pe-x86-64\n' "${windres_tool}"
 		  ;;
 	  arm64|aarch64|ARM64)
-		  if ! command -v "${LLVM_WINDRES_TOOL}" >/dev/null 2>&1; then
-			  echo "Required LLVM ARM64 resource compiler not found in PATH: ${LLVM_WINDRES_TOOL}" >&2
+		  if command -v "${llvm_rc_tool}" >/dev/null 2>&1; then
+			  generate_llvm_rc_windres_wrapper
+		  elif command -v "${llvm_windres_tool}" >/dev/null 2>&1; then
+			  printf '%s --target=aarch64-pc-windows-msvc\n' "${llvm_windres_tool}"
+		  else
+			  echo "Required LLVM ARM64 resource compiler not found in PATH: ${llvm_rc_tool} or ${llvm_windres_tool}" >&2
 			  return 1
 		  fi
-		  printf '%s --target=aarch64-pc-windows-msvc\n' "${LLVM_WINDRES_TOOL}"
 		  ;;
 	  *)
 		  printf '%s\n' "${windres_tool}"
