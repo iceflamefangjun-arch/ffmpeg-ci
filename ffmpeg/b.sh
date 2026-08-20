@@ -494,6 +494,7 @@ do
         --enable-swscale                    \
         --disable-swscale-alpha             \
         --disable-gray                      \
+        --disable-avdevice                  \
         --disable-postproc                  \
         --enable-avfilter                   \
         --enable-network                    \
@@ -568,7 +569,7 @@ do
     make V=1 -j $(nproc) install || exit
     mkdir -p "${CURRENTPATH}/${OUTPUT}"
 
-    for filename in 'avutil-59' 'avfilter-10' 'avcodec-61' 'avformat-61' 'avdevice-61' 'swscale-8' 'swresample-5'; do
+    for filename in 'avutil-59' 'avfilter-10' 'avcodec-61' 'avformat-61' 'swscale-8' 'swresample-5'; do
       if [ -f ${CURRENTPATH}/build/lib${filename%-*}/${filename}.pdb ]; then
         cp -al ${CURRENTPATH}/build/lib${filename%-*}/${filename}.pdb ${CURRENTPATH}/${OUTPUT}/bin/
       fi
