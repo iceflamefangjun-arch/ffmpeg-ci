@@ -33,13 +33,14 @@ diff --git a/libavformat/bluray.c b/libavformat/bluray.c
 index 1845551..c162da3 100644
 --- a/libavformat/bluray.c
 +++ b/libavformat/bluray.c
-@@ -20,24 +20,29 @@
+@@ -20,24 +20,32 @@
   * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
   */
  
 -#include <libbluray/bluray.h>
 -
 -#include "libavutil/avstring.h"
++#include <inttypes.h>
 +#include "bluray_custom_fs.h"
 +#include "libavformat/avformat.h"
  #include "libavformat/url.h"
@@ -64,6 +65,8 @@ index 1845551..c162da3 100644
      int chapter;
      /*int region;*/
 +    int title_idx;
++    uint64_t playlist_duration;
++    uint32_t playlist_clip_count;
 +
  } BlurayContext;
  
@@ -145,7 +148,7 @@ index 1845551..c162da3 100644
      num_title_idx = bd_get_titles(bd->bd, TITLES_RELEVANT, MIN_PLAYLIST_LENGTH);
      av_log(h, AV_LOG_INFO, "%d usable playlists:\n", num_title_idx);
      if (num_title_idx < 1) {
-@@ -150,26 +188,31 @@ static int bluray_open(URLContext *h, const char *path, int flags)
+@@ -150,26 +188,35 @@ static int bluray_open(URLContext *h, const char *path, int flags)
          int i;
          for (i = 0; i < num_title_idx; i++) {
              BLURAY_TITLE_INFO *info = bd_get_title_info(bd->bd, i, 0);
@@ -164,13 +167,17 @@ index 1845551..c162da3 100644
                  bd->playlist = info->playlist;
 +                bd->title_idx = i;
                  duration = info->duration;
++                bd->playlist_duration = info->duration;
++                bd->playlist_clip_count = info->clip_count;
              }
  
              bd_free_title_info(info);
          }
 -        av_log(h, AV_LOG_INFO, "selected %05d.mpls\n", bd->playlist);
-+        av_log(h, AV_LOG_INFO, "select longest playlist: %05d.mpls\n",
-+               bd->playlist);
++        av_log(h, AV_LOG_INFO, "select longest playlist: %05d.mpls duration=%" PRIu64 " ticks (%" PRIu64 " us) clips=%u\n",
++               bd->playlist, bd->playlist_duration,
++               bd->playlist_duration * 1000000 / 90000,
++               bd->playlist_clip_count);
      }
  
      /* select playlist */
@@ -198,7 +205,7 @@ index 1845551..c162da3 100644
      case AVSEEK_SIZE:
          return bd_get_title_size(bd->bd);
      }
-@@ -222,13 +263,84 @@ static int64_t bluray_seek(URLContext *h, int64_t pos, int whence)
+@@ -222,14 +263,90 @@ static int64_t bluray_seek(URLContext *h, int64_t pos, int whence)
      return AVERROR(EINVAL);
  }
  
@@ -227,6 +234,11 @@ index 1845551..c162da3 100644
 +        goto fail;
 +    }
 +    clip_info = title_info->clips[0];
++    av_log(h, AV_LOG_INFO, "playlist metadata duration=%" PRIu64 " ticks (%" PRIu64 " us) clips=%u first_clip start=%" PRIu64 " in=%" PRIu64 " out=%" PRIu64 "\n",
++           title_info->duration, title_info->duration * 1000000 / 90000,
++           title_info->clip_count, clip_info.start_time, clip_info.in_time, clip_info.out_time);
++    av_dict_set_int(&ic->metadata, "bluray_playlist_duration_us",
++                    title_info->duration * 1000000 / 90000, 0);
 +
 +    for (int i = 0; i < ic->nb_streams; i++) {
 +        if (ic->streams[i] && ic->streams[i]->codecpar) {
@@ -1048,4 +1060,3 @@ index 0000000..38c6447
 \ No newline at end of file
 -- 
 2.39.5 (Apple Git-154)
-
