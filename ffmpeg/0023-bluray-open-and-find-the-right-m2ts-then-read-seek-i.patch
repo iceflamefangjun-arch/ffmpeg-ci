@@ -5,23 +5,22 @@ Subject: [PATCH] bluray open and find the right m2ts, then read\seek it
  direactly instread of bluray logic.
 
 ---
- libavformat/bluray.c | 24 +++++++++++++++++++++---
- 1 file changed, 21 insertions(+), 3 deletions(-)
+ libavformat/bluray.c | 25 ++++++++++++++++++++++---
+ 1 file changed, 22 insertions(+), 3 deletions(-)
 
 diff --git a/libavformat/bluray.c b/libavformat/bluray.c
 index 987f4cc..ef557c6 100644
 --- a/libavformat/bluray.c
 +++ b/libavformat/bluray.c
-@@ -42,7 +42,7 @@ typedef struct {
-     int chapter;
-     /*int region;*/
+@@ -45,5 +45,6 @@ typedef struct {
      int title_idx;
--
+     uint64_t playlist_duration;
+     uint32_t playlist_clip_count;
 +    int stream_opened;
+-
++
  } BlurayContext;
- 
- #define OFFSET(x) offsetof(BlurayContext, x)
-@@ -231,6 +231,8 @@ static int bluray_open(URLContext *h, const char *path, int flags,
+@@ -239,6 +240,8 @@ static int bluray_open(URLContext *h, const char *path, int flags,
      if (bd->chapter > 1) {
          bd_seek_chapter(bd->bd, bd->chapter - 1);
      }
@@ -30,7 +29,7 @@ index 987f4cc..ef557c6 100644
      return 0;
  }
  
-@@ -243,6 +245,14 @@ static int bluray_read(URLContext *h, unsigned char *buf, int size)
+@@ -251,6 +254,14 @@ static int bluray_read(URLContext *h, unsigned char *buf, int size)
          return AVERROR(EFAULT);
      }
  
@@ -45,7 +44,7 @@ index 987f4cc..ef557c6 100644
      len = bd_read(bd->bd, buf, size);
  
      return len == 0 ? AVERROR_EOF : len;
-@@ -260,9 +270,17 @@ static int64_t bluray_seek(URLContext *h, int64_t pos, int whence)
+@@ -268,9 +279,17 @@ static int64_t bluray_seek(URLContext *h, int64_t pos, int whence)
      case SEEK_SET:
      case SEEK_CUR:
      case SEEK_END:
@@ -67,4 +66,3 @@ index 987f4cc..ef557c6 100644
      av_log(h, AV_LOG_ERROR, "Unsupported whence operation %d\n", whence);
 -- 
 2.39.5 (Apple Git-154)
-

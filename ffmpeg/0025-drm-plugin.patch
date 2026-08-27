@@ -621,14 +621,10 @@ diff --git a/libavformat/protocols.c b/libavformat/protocols.c
 index 93a6d67261..08c30e0c39
 --- a/libavformat/protocols.c
 +++ b/libavformat/protocols.c
-@@ -78,6 +78,7 @@ extern const URLProtocol ff_libsmbclient_protocol;
+@@ -79,3 +79,4 @@ extern const URLProtocol ff_libsmb2_protocol;
  extern const URLProtocol ff_libzmq_protocol;
  extern const URLProtocol ff_ipfs_gateway_protocol;
- extern const URLProtocol ff_ipns_gateway_protocol;
 +extern const URLProtocol ff_drm_protocol;
-
- #include "libavformat/protocol_list.c"
-
+ extern const URLProtocol ff_ipns_gateway_protocol;
 -- 
 2.42.0
-
