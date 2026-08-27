@@ -205,7 +205,7 @@ index 1845551..c162da3 100644
      case AVSEEK_SIZE:
          return bd_get_title_size(bd->bd);
      }
-@@ -222,14 +263,90 @@ static int64_t bluray_seek(URLContext *h, int64_t pos, int whence)
+@@ -222,13 +263,89 @@ static int64_t bluray_seek(URLContext *h, int64_t pos, int whence)
      return AVERROR(EINVAL);
  }
  
