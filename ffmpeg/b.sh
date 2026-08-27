@@ -115,9 +115,9 @@ else
 fi
 ############################################################################################
 
-trap "cd \"${FFMPEG_SRC_DIR}\" && git reset --hard && rm -f libavcodec/{av3a.h,av3a_parser.c} libavformat/{application.c,application.h,av3adec.c,bluray_custom_fs.c,bluray_custom_fs.h,dns_cache.c,dns_cache.h,drm_plugin.c,ijkutils.c,libsmb2.c,lrucache.c,lrucache.h,dvd.c,bluray_util.h} libavutil/{application.h,application.c}" EXIT
+trap "cd \"${FFMPEG_SRC_DIR}\" && git reset --hard && rm -f libavcodec/{av3a.h,av3a_parser.c} libavformat/{application.c,application.h,av3adec.c,bluray_custom_fs.c,bluray_custom_fs.h,dns_cache.c,dns_cache.h,drm_plugin.c,ijkutils.c,libsmb2.c,lrucache.c,lrucache.h,umd.c,dvd.c,bluray_util.h} libavutil/{application.h,application.c}" EXIT
 pushd "${FFMPEG_SRC_DIR}"
-git reset --hard && rm -f libavcodec/{av3a.h,av3a_parser.c} libavformat/{application.c,application.h,av3adec.c,bluray_custom_fs.c,bluray_custom_fs.h,dns_cache.c,dns_cache.h,drm_plugin.c,ijkutils.c,libsmb2.c,lrucache.c,lrucache.h}
+git reset --hard && rm -f libavcodec/{av3a.h,av3a_parser.c} libavformat/{application.c,application.h,av3adec.c,bluray_custom_fs.c,bluray_custom_fs.h,dns_cache.c,dns_cache.h,drm_plugin.c,ijkutils.c,libsmb2.c,lrucache.c,lrucache.h,umd.c}
 sed -i '/test "\$cc_type" != "\$ld_type" && die "LTO requires same compiler and linker"/d' configure
 popd
 
@@ -162,12 +162,8 @@ echo "Applying patch 0019-add-built-in-smb2-protocol-via-libsmb2.patch..."
 patch -d "${FFMPEG_SRC_DIR}" -p1 <${CURRENTPATH}/0019-add-built-in-smb2-protocol-via-libsmb2.patch || exit
 echo "Applying patch 0020-URLProtocol-add-url_parse_priv-function-pointer.patch..."
 patch -d "${FFMPEG_SRC_DIR}" -p1 <${CURRENTPATH}/0020-URLProtocol-add-url_parse_priv-function-pointer.patch || exit
-echo "Applying patch 0021-bluray-protocol-add-dvd-fallback.patch..."
-patch -d "${FFMPEG_SRC_DIR}" -p1 <${CURRENTPATH}/0021-bluray-protocol-add-dvd-fallback.patch || exit
 echo "Applying patch 0022-custom-bluray-fs-for-network-Blu-ray-Disc-and-BDMV.patch..."
 patch -d "${FFMPEG_SRC_DIR}" -p1 <${CURRENTPATH}/0022-custom-bluray-fs-for-network-Blu-ray-Disc-and-BDMV.patch || exit
-echo "Applying patch 0023-bluray-open-and-find-the-right-m2ts-then-read-seek-i.patch..."
-patch -d "${FFMPEG_SRC_DIR}" -p1 <${CURRENTPATH}/0023-bluray-open-and-find-the-right-m2ts-then-read-seek-i.patch || exit
 echo "Applying patch 0024-dash-mem-alloc-bug-fix.patch..."
 patch -d "${FFMPEG_SRC_DIR}" -p1 <${CURRENTPATH}/0024-dash-mem-alloc-bug-fix.patch || exit
 echo "Applying patch 0025-drm-plugin.patch..."
@@ -176,6 +172,8 @@ echo "Applying patch 0026-clean-avio-error-when-meet-eof-or-read-data.patch..."
 patch -d "${FFMPEG_SRC_DIR}" -p1 <${CURRENTPATH}/0026-clean-avio-error-when-meet-eof-or-read-data.patch || exit
 echo "Applying patch 0027-mov-auxiliary_info_sample_count-is-not-required.patch..."
 patch -d "${FFMPEG_SRC_DIR}" -p1 <${CURRENTPATH}/0027-mov-auxiliary_info_sample_count-is-not-required.patch || exit
+echo "Applying patch 0029-fix-bluray-playlist-and-add-umd-video.patch..."
+patch -d "${FFMPEG_SRC_DIR}" -p1 <${CURRENTPATH}/0029-fix-bluray-playlist-and-add-umd-video.patch || exit
 
 # clang-cl is detected by FFmpeg's configure script as an MSVC-compatible
 # compiler rather than as clang.  Therefore, its upstream clang-only ThinLTO

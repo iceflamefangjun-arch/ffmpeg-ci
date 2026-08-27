@@ -1,0 +1,527 @@
+diff --git a/libavformat/Makefile b/libavformat/Makefile
+index 6af8d43..06d4b5a 100644
+--- a/libavformat/Makefile
++++ b/libavformat/Makefile
+@@ -725,6 +725,7 @@ TLS-OBJS-$(CONFIG_SECURETRANSPORT)       += tls_securetransport.o
+ TLS-OBJS-$(CONFIG_SCHANNEL)              += tls_schannel.o
+ OBJS-$(CONFIG_TLS_PROTOCOL)              += tls.o $(TLS-OBJS-yes)
+ OBJS-$(CONFIG_UDP_PROTOCOL)              += udp.o ip.o
++OBJS-$(CONFIG_UMD_PROTOCOL)              += umd.o urldecode.o
+ OBJS-$(CONFIG_UDPLITE_PROTOCOL)          += udp.o ip.o
+ OBJS-$(CONFIG_UNIX_PROTOCOL)             += unix.o
+ 
+diff --git a/libavformat/bluray.c b/libavformat/bluray.c
+index 0c44d7c..1a2f88c 100644
+--- a/libavformat/bluray.c
++++ b/libavformat/bluray.c
+@@ -307,6 +307,7 @@ static int bluray_parse_priv(AVFormatContext *ic, URLContext *h)
+            title_info->clip_count, clip_info.start_time, clip_info.in_time, clip_info.out_time);
+     av_dict_set_int(&ic->metadata, "bluray_playlist_duration_us",
+                     title_info->duration * 1000000 / 90000, 0);
++    ic->duration = title_info->duration * AV_TIME_BASE / 90000;
+ 
+     for (int i = 0; i < ic->nb_streams; i++) {
+         if (ic->streams[i] && ic->streams[i]->codecpar) {
+diff --git a/libavformat/demux.c b/libavformat/demux.c
+index 9ce4525..59edb43 100644
+--- a/libavformat/demux.c
++++ b/libavformat/demux.c
+@@ -3138,6 +3138,9 @@ find_stream_info_err:
+         FFIOContext *const ctx = ffiocontext(ic->pb);
+         av_log(ic, AV_LOG_DEBUG, "After avformat_find_stream_info() pos: %"PRId64" bytes read:%"PRId64" seeks:%d frames:%d\n",
+                avio_tell(ic->pb), ctx->bytes_read, ctx->seek_count, count);
++        URLContext *url_context = ffio_geturlcontext(ic->pb);
++        if (url_context && url_context->prot && url_context->prot->url_parse_priv)
++            url_context->prot->url_parse_priv(ic, url_context);
+     }
+     return ret;
+ 
+diff --git a/libavformat/mpeg.c b/libavformat/mpeg.c
+index 2c766a4..c6071c9 100644
+--- a/libavformat/mpeg.c
++++ b/libavformat/mpeg.c
+@@ -21,7 +21,9 @@
+ 
+ #include "config_components.h"
+ 
++#include "libavutil/avstring.h"
+ #include "libavutil/channel_layout.h"
++#include "libavutil/intreadwrite.h"
+ #include "libavutil/mem.h"
+ #include "avformat.h"
+ #include "avio_internal.h"
+@@ -129,6 +131,12 @@ typedef struct MpegDemuxContext {
+     int dvd;
+     int imkh_cctv;
+     int raw_ac3;
++    int umd;
++    uint8_t *umd_audio;
++    int umd_audio_size;
++    int umd_audio_allocated;
++    int64_t umd_audio_pts;
++    int64_t umd_audio_dts;
+ } MpegDemuxContext;
+ 
+ static int mpegps_read_header(AVFormatContext *s)
+@@ -138,6 +146,9 @@ static int mpegps_read_header(AVFormatContext *s)
+     int64_t last_pos = avio_tell(s->pb);
+ 
+     m->header_state = 0xff;
++    m->umd = av_strstart(s->url, "umd://", NULL);
++    m->umd_audio_pts = AV_NOPTS_VALUE;
++    m->umd_audio_dts = AV_NOPTS_VALUE;
+     s->ctx_flags   |= AVFMTCTX_NOHEADER;
+ 
+     avio_get_str(s->pb, 6, buffer, sizeof(buffer));
+@@ -480,6 +491,88 @@ redo:
+     return len;
+ }
+ 
++static int umd_audio_packet(AVFormatContext *s, AVPacket *pkt)
++{
++    MpegDemuxContext *m = s->priv_data;
++    AVStream *st = NULL;
++    int frame_size;
++    int payload_size;
++    int ret;
++
++    if (m->umd_audio_size < 8)
++        return AVERROR(EAGAIN);
++    if (m->umd_audio[0] != 0x0f || m->umd_audio[1] != 0xd0) {
++        int offset;
++        for (offset = 1; offset + 1 < m->umd_audio_size; offset++) {
++            if (m->umd_audio[offset] == 0x0f &&
++                m->umd_audio[offset + 1] == 0xd0)
++                break;
++        }
++        av_log(s, AV_LOG_DEBUG,
++               "Resynchronizing UMD ATRAC3+ stream after %d bytes\n", offset);
++        memmove(m->umd_audio, m->umd_audio + offset,
++                m->umd_audio_size - offset);
++        m->umd_audio_size -= offset;
++        return AVERROR(EAGAIN);
++    }
++
++    frame_size = ((AV_RB16(m->umd_audio + 2) & 0x3ff) << 3) + 8;
++    if (frame_size <= 8 || frame_size > m->umd_audio_size)
++        return AVERROR(EAGAIN);
++
++    for (unsigned i = 0; i < s->nb_streams; i++) {
++        if (s->streams[i]->id == 0x08) {
++            st = s->streams[i];
++            break;
++        }
++    }
++    if (!st)
++        return AVERROR_STREAM_NOT_FOUND;
++
++    payload_size = frame_size - 8;
++    ret = av_new_packet(pkt, payload_size);
++    if (ret < 0)
++        return ret;
++    memcpy(pkt->data, m->umd_audio + 8, payload_size);
++    memmove(m->umd_audio, m->umd_audio + frame_size,
++            m->umd_audio_size - frame_size);
++    m->umd_audio_size -= frame_size;
++
++    st->codecpar->block_align = payload_size;
++    pkt->pts = m->umd_audio_pts;
++    pkt->dts = m->umd_audio_dts;
++    pkt->stream_index = st->index;
++    m->umd_audio_pts = AV_NOPTS_VALUE;
++    m->umd_audio_dts = AV_NOPTS_VALUE;
++    return 0;
++}
++
++static int umd_append_audio(AVFormatContext *s, int len,
++                            int64_t pts, int64_t dts)
++{
++    MpegDemuxContext *m = s->priv_data;
++    int needed = m->umd_audio_size + len;
++    int ret;
++
++    if (needed > m->umd_audio_allocated) {
++        int allocated = FFMAX(needed, m->umd_audio_allocated * 2);
++        uint8_t *buffer = av_realloc(m->umd_audio, allocated);
++        if (!buffer)
++            return AVERROR(ENOMEM);
++        m->umd_audio = buffer;
++        m->umd_audio_allocated = allocated;
++    }
++    if (!m->umd_audio_size) {
++        m->umd_audio_pts = pts;
++        m->umd_audio_dts = dts;
++    }
++    ret = avio_read(s->pb, m->umd_audio + m->umd_audio_size, len);
++    if (ret < 0)
++        return ret;
++    m->umd_audio_size += ret;
++    return ret == len ? 0 : AVERROR_EOF;
++}
++
+ static int mpegps_read_packet(AVFormatContext *s,
+                               AVPacket *pkt)
+ {
+@@ -493,6 +586,9 @@ static int mpegps_read_packet(AVFormatContext *s,
+     enum AVMediaType type;
+     int64_t pts, dts, dummy_pos; // dummy_pos is needed for the index building to work
+ 
++    if (m->umd && umd_audio_packet(s, pkt) == 0)
++        return 0;
++
+ redo:
+     len = mpegps_read_pes_header(s, &dummy_pos, &startcode, &pts, &dts);
+     if (len < 0)
+@@ -614,6 +710,9 @@ redo:
+         /* Used for both AC-3 and E-AC-3 in EVOB files */
+         type     = AVMEDIA_TYPE_AUDIO;
+         codec_id = AV_CODEC_ID_AC3;
++    } else if (m->umd && startcode == 0x08) {
++        type = AVMEDIA_TYPE_AUDIO;
++        codec_id = AV_CODEC_ID_ATRAC3P;
+     } else if (startcode >= 0x20 && startcode <= 0x3f) {
+         type     = AVMEDIA_TYPE_SUBTITLE;
+         codec_id = AV_CODEC_ID_DVD_SUBTITLE;
+@@ -638,6 +737,9 @@ skip:
+         || st->codecpar->codec_id == AV_CODEC_ID_PCM_ALAW) {
+         st->codecpar->ch_layout = (AVChannelLayout)AV_CHANNEL_LAYOUT_MONO;
+         st->codecpar->sample_rate = 8000;
++    } else if (m->umd && st->codecpar->codec_id == AV_CODEC_ID_ATRAC3P) {
++        st->codecpar->ch_layout = (AVChannelLayout)AV_CHANNEL_LAYOUT_STEREO;
++        st->codecpar->sample_rate = 44100;
+     }
+     sti->request_probe = request_probe;
+     sti->need_parsing  = AVSTREAM_PARSE_FULL;
+@@ -645,6 +747,21 @@ skip:
+ found:
+     if (st->discard >= AVDISCARD_ALL)
+         goto skip;
++    if (m->umd && startcode == 0x08) {
++        if (len <= 3)
++            goto skip;
++        avio_skip(s->pb, 3);
++        len -= 3;
++        ret = umd_append_audio(s, len, pts, dts);
++        if (ret < 0)
++            return ret;
++        ret = umd_audio_packet(s, pkt);
++        if (ret == 0)
++            return 0;
++        if (ret != AVERROR(EAGAIN))
++            return ret;
++        goto redo;
++    }
+     if (startcode >= 0xa0 && startcode <= 0xaf) {
+       if (st->codecpar->codec_id == AV_CODEC_ID_MLP) {
+             if (len < 6)
+@@ -668,6 +785,25 @@ found:
+     return (ret < 0) ? ret : 0;
+ }
+ 
++static int mpegps_read_close(AVFormatContext *s)
++{
++    MpegDemuxContext *m = s->priv_data;
++
++    av_freep(&m->umd_audio);
++    return 0;
++}
++
++static int mpegps_read_seek(AVFormatContext *s, int stream_index,
++                            int64_t timestamp, int flags)
++{
++    MpegDemuxContext *m = s->priv_data;
++
++    m->umd_audio_size = 0;
++    m->umd_audio_pts = AV_NOPTS_VALUE;
++    m->umd_audio_dts = AV_NOPTS_VALUE;
++    return ff_seek_frame_binary(s, stream_index, timestamp, flags);
++}
++
+ static int64_t mpegps_read_dts(AVFormatContext *s, int stream_index,
+                                int64_t *ppos, int64_t pos_limit)
+ {
+@@ -707,6 +843,8 @@ const FFInputFormat ff_mpegps_demuxer = {
+     .read_header    = mpegps_read_header,
+     .read_packet    = mpegps_read_packet,
+     .read_timestamp = mpegps_read_dts,
++    .read_seek      = mpegps_read_seek,
++    .read_close     = mpegps_read_close,
+ };
+ 
+ #if CONFIG_VOBSUB_DEMUXER
+diff --git a/libavformat/protocols.c b/libavformat/protocols.c
+index 1a8c084..be55c8f 100644
+--- a/libavformat/protocols.c
++++ b/libavformat/protocols.c
+@@ -63,6 +63,7 @@ extern const URLProtocol ff_tee_protocol;
+ extern const URLProtocol ff_tcp_protocol;
+ extern const URLProtocol ff_tls_protocol;
+ extern const URLProtocol ff_udp_protocol;
++extern const URLProtocol ff_umd_protocol;
+ extern const URLProtocol ff_udplite_protocol;
+ extern const URLProtocol ff_unix_protocol;
+ extern const URLProtocol ff_libamqp_protocol;
+diff --git a/libavformat/umd.c b/libavformat/umd.c
+new file mode 100644
+index 0000000..f93c885
+--- /dev/null
++++ b/libavformat/umd.c
+@@ -0,0 +1,258 @@
++/*
++ * UMD Video ISO protocol
++ *
++ * This file is part of FFmpeg.
++ */
++
++#include <inttypes.h>
++#include <string.h>
++
++#include "libavutil/avstring.h"
++#include "libavutil/dict.h"
++#include "libavutil/error.h"
++#include "libavutil/intreadwrite.h"
++#include "libavutil/mem.h"
++#include "avformat.h"
++#include "url.h"
++#include "urldecode.h"
++
++#define ISO_SECTOR_SIZE 2048
++#define ISO_PVD_SECTOR  16
++#define ISO_ROOT_OFFSET 156
++
++typedef struct UmdContext {
++    URLContext *inner;
++    int64_t program_offset;
++    int64_t program_size;
++    int64_t position;
++    uint32_t program_extent;
++    char program_name[256];
++} UmdContext;
++
++typedef struct IsoEntry {
++    uint32_t extent;
++    uint32_t size;
++    int is_directory;
++    char name[256];
++} IsoEntry;
++
++static int umd_read_at(UmdContext *umd, int64_t offset, uint8_t *buf, int size)
++{
++    int total = 0;
++    int64_t pos = ffurl_seek(umd->inner, offset, SEEK_SET);
++
++    if (pos < 0)
++        return (int)pos;
++    while (total < size) {
++        int ret = ffurl_read(umd->inner, buf + total, size - total);
++        if (ret <= 0)
++            return ret < 0 ? ret : AVERROR_EOF;
++        total += ret;
++    }
++    return 0;
++}
++
++static void iso_entry_from_record(IsoEntry *entry, const uint8_t *record)
++{
++    int name_length = record[32];
++
++    entry->extent = AV_RL32(record + 2);
++    entry->size = AV_RL32(record + 10);
++    entry->is_directory = !!(record[25] & 2);
++    name_length = FFMIN(name_length, (int)sizeof(entry->name) - 1);
++    memcpy(entry->name, record + 33, name_length);
++    entry->name[name_length] = '\0';
++    if (name_length > 2 && entry->name[name_length - 2] == ';' &&
++        entry->name[name_length - 1] == '1')
++        entry->name[name_length - 2] = '\0';
++}
++
++static int iso_scan_directory(UmdContext *umd, const IsoEntry *directory,
++                              const char *wanted_name, int wanted_directory,
++                              IsoEntry *result, int select_largest_mps)
++{
++    uint8_t sector[ISO_SECTOR_SIZE];
++    uint32_t offset = 0;
++    int found = 0;
++
++    while (offset < directory->size) {
++        uint32_t sector_offset = offset % ISO_SECTOR_SIZE;
++        uint32_t sector_base = offset - sector_offset;
++        int ret = umd_read_at(umd,
++                              (int64_t)directory->extent * ISO_SECTOR_SIZE + sector_base,
++                              sector, sizeof(sector));
++        if (ret < 0)
++            return ret;
++
++        while (sector_offset < ISO_SECTOR_SIZE && offset < directory->size) {
++            const uint8_t *record = sector + sector_offset;
++            int record_length = record[0];
++            IsoEntry entry;
++
++            if (!record_length) {
++                offset = sector_base + ISO_SECTOR_SIZE;
++                break;
++            }
++            if (record_length < 34 || sector_offset + record_length > ISO_SECTOR_SIZE ||
++                33 + record[32] > record_length)
++                return AVERROR_INVALIDDATA;
++
++            iso_entry_from_record(&entry, record);
++            if (entry.name[0] != '\0' && entry.name[0] != '\1') {
++                if (select_largest_mps) {
++                    size_t length = strlen(entry.name);
++                    if (!entry.is_directory && length > 4 &&
++                        !av_strcasecmp(entry.name + length - 4, ".MPS") &&
++                        (!found || entry.size > result->size)) {
++                        *result = entry;
++                        found = 1;
++                    }
++                } else if (entry.is_directory == wanted_directory &&
++                           !av_strcasecmp(entry.name, wanted_name)) {
++                    *result = entry;
++                    return 0;
++                }
++            }
++
++            sector_offset += record_length;
++            offset += record_length;
++        }
++    }
++
++    return found ? 0 : AVERROR(ENOENT);
++}
++
++static int umd_open(URLContext *h, const char *url, int flags,
++                    AVDictionary **options)
++{
++    UmdContext *umd = h->priv_data;
++    const char *source = url;
++    char *decoded = NULL;
++    uint8_t pvd[ISO_SECTOR_SIZE];
++    IsoEntry root = { 0 };
++    IsoEntry umd_video;
++    IsoEntry stream;
++    IsoEntry program;
++    char volume_id[33];
++    int ret;
++
++    av_strstart(url, "umd://", &source);
++    decoded = ff_urldecode(source, 0);
++    if (!decoded)
++        return AVERROR(ENOMEM);
++
++    ret = ffurl_open_whitelist(&umd->inner, decoded, AVIO_FLAG_READ,
++                               &h->interrupt_callback, options,
++                               h->protocol_whitelist, h->protocol_blacklist, h);
++    av_free(decoded);
++    if (ret < 0)
++        return ret;
++
++    ret = umd_read_at(umd, (int64_t)ISO_PVD_SECTOR * ISO_SECTOR_SIZE,
++                      pvd, sizeof(pvd));
++    if (ret < 0)
++        goto fail;
++    if (pvd[0] != 1 || memcmp(pvd + 1, "CD001", 5) || pvd[6] != 1) {
++        ret = AVERROR_INVALIDDATA;
++        goto fail;
++    }
++
++    memcpy(volume_id, pvd + 40, 32);
++    volume_id[32] = '\0';
++    for (int i = 31; i >= 0 && volume_id[i] == ' '; --i)
++        volume_id[i] = '\0';
++    av_log(h, AV_LOG_INFO, "UMD Video ISO volume='%s'\n", volume_id);
++
++    if (pvd[ISO_ROOT_OFFSET] < 34 ||
++        33 + pvd[ISO_ROOT_OFFSET + 32] > pvd[ISO_ROOT_OFFSET]) {
++        ret = AVERROR_INVALIDDATA;
++        goto fail;
++    }
++    iso_entry_from_record(&root, pvd + ISO_ROOT_OFFSET);
++    ret = iso_scan_directory(umd, &root, "UMD_VIDEO", 1, &umd_video, 0);
++    if (ret < 0)
++        goto fail;
++    ret = iso_scan_directory(umd, &umd_video, "STREAM", 1, &stream, 0);
++    if (ret < 0)
++        goto fail;
++    ret = iso_scan_directory(umd, &stream, NULL, 0, &program, 1);
++    if (ret < 0)
++        goto fail;
++
++    umd->program_extent = program.extent;
++    umd->program_offset = (int64_t)program.extent * ISO_SECTOR_SIZE;
++    umd->program_size = program.size;
++    av_strlcpy(umd->program_name, program.name, sizeof(umd->program_name));
++    h->is_streamed = 0;
++    av_log(h, AV_LOG_INFO,
++           "UMD Video selected program %s extent=%u size=%"PRId64"\n",
++           umd->program_name, umd->program_extent, umd->program_size);
++    return 0;
++
++fail:
++    ffurl_closep(&umd->inner);
++    return ret;
++}
++
++static int umd_read(URLContext *h, unsigned char *buf, int size)
++{
++    UmdContext *umd = h->priv_data;
++    int64_t remaining = umd->program_size - umd->position;
++    int ret;
++
++    if (remaining <= 0)
++        return AVERROR_EOF;
++    size = (int)FFMIN(remaining, size);
++    ret = umd_read_at(umd, umd->program_offset + umd->position, buf, size);
++    if (ret < 0)
++        return ret;
++    umd->position += size;
++    return size;
++}
++
++static int64_t umd_seek(URLContext *h, int64_t pos, int whence)
++{
++    UmdContext *umd = h->priv_data;
++    int64_t target;
++
++    if (whence == AVSEEK_SIZE)
++        return umd->program_size;
++    if (whence == SEEK_SET)
++        target = pos;
++    else if (whence == SEEK_CUR)
++        target = umd->position + pos;
++    else if (whence == SEEK_END)
++        target = umd->program_size + pos;
++    else
++        return AVERROR(EINVAL);
++    if (target < 0 || target > umd->program_size)
++        return AVERROR(EINVAL);
++    umd->position = target;
++    return target;
++}
++
++static int umd_close(URLContext *h)
++{
++    UmdContext *umd = h->priv_data;
++    return ffurl_closep(&umd->inner);
++}
++
++static int umd_parse_priv(AVFormatContext *ic, URLContext *h)
++{
++    UmdContext *umd = h->priv_data;
++
++    av_dict_set(&ic->metadata, "umd_program", umd->program_name, 0);
++    av_dict_set_int(&ic->metadata, "umd_program_extent", umd->program_extent, 0);
++    av_dict_set_int(&ic->metadata, "umd_program_size", umd->program_size, 0);
++    return 0;
++}
++
++const URLProtocol ff_umd_protocol = {
++    .name           = "umd",
++    .url_open2      = umd_open,
++    .url_read       = umd_read,
++    .url_seek       = umd_seek,
++    .url_close      = umd_close,
++    .url_parse_priv = umd_parse_priv,
++    .priv_data_size = sizeof(UmdContext),
++};
