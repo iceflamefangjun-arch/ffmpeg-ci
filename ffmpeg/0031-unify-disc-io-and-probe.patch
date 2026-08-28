@@ -20,7 +20,7 @@ new file mode 100644
 index 0000000..28120c6
 --- /dev/null
 +++ b/libavformat/disc_io.c
-@@ -0,0 +1,366 @@
+@@ -0,0 +1,423 @@
 +#include "disc_io.h"
 +
 +#include "libavutil/avstring.h"
@@ -74,9 +74,9 @@ index 0000000..28120c6
 +        return ret;
 +    got = avio_seek(io->pb, offset, SEEK_SET);
 +    if (got < 0)
-+        return AVERROR(EIO);
++        return (int)got;
 +    if (got != offset)
-+        return AV_DISC_ERROR_NOT_SEEKABLE;
++        return AVERROR(ESPIPE);
 +    n = avio_read(io->pb, buf, size);
 +    if (n > 0)
 +        io->last_io_us = av_gettime_relative();
@@ -156,12 +156,21 @@ index 0000000..28120c6
 +
 +static int map_open_error(int ret)
 +{
++    if (ret >= 0)
++        return AV_DISC_ERROR_NONE;
 +    if (ret == AVERROR_EXIT)
 +        return AV_DISC_ERROR_CANCELLED;
 +    if (ret == AVERROR(ETIMEDOUT))
 +        return AV_DISC_ERROR_TIMEOUT;
-+    if (ret == AVERROR(EPERM) || ret == AVERROR(EACCES) || ret == AVERROR(ECONNREFUSED))
++    if (ret == AVERROR(ESPIPE) || ret == AVERROR(EPIPE))
++        return AV_DISC_ERROR_NOT_SEEKABLE;
++    if (ret == AVERROR(EPERM) || ret == AVERROR(EACCES) ||
++        ret == AVERROR_HTTP_UNAUTHORIZED || ret == AVERROR_HTTP_FORBIDDEN)
 +        return AV_DISC_ERROR_AUTHENTICATION_FAILED;
++    if (ret == AVERROR_INVALIDDATA)
++        return AV_DISC_ERROR_INVALID_DATA;
++    if (ret == AVERROR(ENOSYS))
++        return AV_DISC_ERROR_BACKEND_UNAVAILABLE;
 +    return AV_DISC_ERROR_IO;
 +}
 +
@@ -181,19 +190,19 @@ index 0000000..28120c6
 +    far_off = 16LL * ISO_SECTOR_SIZE;
 +    ret = ff_disc_io_read(io, far_off, far_buf, sizeof(far_buf));
 +    if (ret < (int)sizeof(far_buf))
-+        return AV_DISC_ERROR_NOT_SEEKABLE;
++        return ret < 0 ? ret : AVERROR(ESPIPE);
 +    if (avio_tell(io->pb) != far_off + sizeof(far_buf))
-+        return AV_DISC_ERROR_NOT_SEEKABLE;
++        return AVERROR(ESPIPE);
 +
 +    ret = ff_disc_io_read(io, 0, again, sizeof(again));
 +    if (ret < (int)sizeof(again))
-+        return AV_DISC_ERROR_NOT_SEEKABLE;
++        return ret < 0 ? ret : AVERROR(ESPIPE);
 +    if (avio_tell(io->pb) != (int64_t)sizeof(again))
-+        return AV_DISC_ERROR_NOT_SEEKABLE;
++        return AVERROR(ESPIPE);
 +    if (memcmp(first, again, sizeof(first)) != 0)
-+        return AV_DISC_ERROR_NOT_SEEKABLE;
++        return AVERROR(ESPIPE);
 +    if (memcmp(first, far_buf, sizeof(first)) == 0)
-+        return AV_DISC_ERROR_NOT_SEEKABLE;
++        return AVERROR(ESPIPE);
 +    return 0;
 +}
 +
@@ -218,7 +227,7 @@ index 0000000..28120c6
 +                              (int64_t)parent->extent * ISO_SECTOR_SIZE + sector_base,
 +                              sector, sizeof(sector));
 +        if (ret < (int)sizeof(sector))
-+            return AVERROR(EIO);
++            return ret < 0 ? ret : AVERROR(EIO);
 +        record_offset = sector_offset;
 +        while (record_offset < ISO_SECTOR_SIZE && offset < parent->size) {
 +            const uint8_t *record = sector + record_offset;
@@ -303,6 +312,56 @@ index 0000000..28120c6
 +}
 +#endif
 +
++static int classify_iso9660(DiscIO *io, const IsoDir *root, enum AVDiscImageType *type)
++{
++    IsoDir child, stream;
++    int ret;
++
++    ret = find_iso_dir(io, root, "UMD_VIDEO", &child);
++    if (ret < 0)
++        return ret;
++    if (ret > 0) {
++        ret = find_iso_dir(io, &child, "STREAM", &stream);
++        if (ret < 0)
++            return ret;
++        if (ret > 0) {
++            *type = AV_DISC_IMAGE_UMD_VIDEO;
++            return 0;
++        }
++    }
++
++    ret = find_iso_dir(io, root, "BDMV", &child);
++    if (ret < 0)
++        return ret;
++    if (ret > 0) {
++#if CONFIG_BLURAY_PROTOCOL
++        if (confirm_bluray(io)) {
++            *type = AV_DISC_IMAGE_BLURAY;
++            return 0;
++        }
++        return AVERROR_INVALIDDATA;
++#else
++        return AVERROR(ENOSYS);
++#endif
++    }
++
++    ret = find_iso_dir(io, root, "VIDEO_TS", &child);
++    if (ret < 0)
++        return ret;
++    if (ret > 0) {
++#if CONFIG_DVDVIDEO_DEMUXER
++        if (confirm_dvd(io)) {
++            *type = AV_DISC_IMAGE_DVD;
++            return 0;
++        }
++        return AVERROR_INVALIDDATA;
++#else
++        return AVERROR(ENOSYS);
++#endif
++    }
++    return 0;
++}
++
 +int av_disc_probe(const char *normalized_url,
 +                  const AVDictionary *io_options,
 +                  AVIOInterruptCB interrupt_cb,
@@ -311,7 +370,7 @@ index 0000000..28120c6
 +{
 +    DiscIO *io;
 +    uint8_t pvd[ISO_SECTOR_SIZE];
-+    IsoDir root, child, stream;
++    IsoDir root;
 +    int ret, open_err = 0;
 +    int udf_hint = 0;
 +    enum AVDiscImageType type = AV_DISC_IMAGE_UNKNOWN;
@@ -319,7 +378,7 @@ index 0000000..28120c6
 +    if (out_type)
 +        *out_type = AV_DISC_IMAGE_UNKNOWN;
 +    if (!normalized_url)
-+        return AVERROR(EINVAL);
++        return AV_DISC_ERROR_IO;
 +
 +    io = ff_disc_io_open(normalized_url, io_options, interrupt_cb,
 +                         startup_deadline_us, &open_err);
@@ -327,27 +386,25 @@ index 0000000..28120c6
 +        return map_open_error(open_err);
 +
 +    ret = verify_random_seek(io);
-+    if (ret == AV_DISC_ERROR_NOT_SEEKABLE) {
-+        ff_disc_io_close(&io);
-+        return AV_DISC_ERROR_NOT_SEEKABLE;
-+    }
 +    if (ret < 0) {
 +        ff_disc_io_close(&io);
 +        return map_open_error(ret);
 +    }
 +
 +    ret = ff_disc_io_read(io, 16LL * ISO_SECTOR_SIZE, pvd, sizeof(pvd));
++    if (ret < 0) {
++        ff_disc_io_close(&io);
++        return map_open_error(ret);
++    }
 +    if (ret >= (int)sizeof(pvd) && pvd[0] == 1 && !memcmp(pvd + 1, "CD001", 5) &&
 +        pvd[6] == 1 && pvd[156] >= 34) {
 +        memcpy(&root.extent, pvd + 158, 4);
 +        memcpy(&root.size, pvd + 166, 4);
-+        if (find_iso_dir(io, &root, "UMD_VIDEO", &child) > 0 &&
-+            find_iso_dir(io, &child, "STREAM", &stream) > 0)
-+            type = AV_DISC_IMAGE_UMD_VIDEO;
-+        else if (find_iso_dir(io, &root, "BDMV", &child) > 0)
-+            type = AV_DISC_IMAGE_BLURAY;
-+        else if (find_iso_dir(io, &root, "VIDEO_TS", &child) > 0)
-+            type = AV_DISC_IMAGE_DVD;
++        ret = classify_iso9660(io, &root, &type);
++        if (ret < 0) {
++            ff_disc_io_close(&io);
++            return map_open_error(ret);
++        }
 +    }
 +
 +    if (type == AV_DISC_IMAGE_UNKNOWN) {

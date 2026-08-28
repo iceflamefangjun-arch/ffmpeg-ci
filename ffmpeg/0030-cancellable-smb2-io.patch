@@ -47,7 +47,7 @@ index 408f9e1..d1a51c4 100644
      const AVClass *class;
  
      struct smb2_context *ctx;
-@@ -46,25 +59,125 @@ typedef struct
+@@ -46,25 +59,139 @@ typedef struct
      char *app_ctx_intptr;
      AVApplicationContext *app_ctx;
      int smb2_seal;
@@ -164,7 +164,21 @@ index 408f9e1..d1a51c4 100644
 +    ret = wait->status;
 +    av_free(wait);
 +    *pwait = NULL;
-+    return ret;
++    if (ret >= 0)
++        return ret;
++    /* libsmb2 callbacks usually pass -errno; large negatives are NTSTATUS. */
++    if (ret >= -256)
++        return ret;
++    switch ((uint32_t)ret) {
++    case 0xC000006Du: /* STATUS_LOGON_FAILURE */
++    case 0xC000006Au: /* STATUS_WRONG_PASSWORD */
++    case 0xC0000022u: /* STATUS_ACCESS_DENIED */
++        return AVERROR(EACCES);
++    case 0xC00000B5u: /* STATUS_IO_TIMEOUT */
++        return AVERROR(ETIMEDOUT);
++    default:
++        return AVERROR(EIO);
++    }
 +}
 +
 +static void destroy_smb2(LIBSMB2Context *libsmb2)
@@ -214,7 +228,7 @@ index 408f9e1..d1a51c4 100644
  
      if (url == NULL) {
          av_log(h, AV_LOG_ERROR, "smb2 parse url failed: %s\n", smb2_get_error(libsmb2->ctx));
-@@ -106,89 +228,129 @@ static av_cold int libsmb2_open(URLContext *h, const char *uri, int flags)
+@@ -106,89 +228,124 @@ static av_cold int libsmb2_open(URLContext *h, const char *uri, int flags)
                  if (strlen(password) > 0) {
                      password = ff_urldecode(password, 0);
                      smb2_set_password(libsmb2->ctx, password);
@@ -264,15 +278,13 @@ index 408f9e1..d1a51c4 100644
 +        av_free(wait);
 +        wait = NULL;
          av_log(h, AV_LOG_ERROR, "smb2 connect share failed: %s\n", smb2_get_error(libsmb2->ctx));
-         ret = AVERROR(ECONNREFUSED);
+         ret = AVERROR(EIO);
          goto failed;
      }
 +    ret = smb2_wait_finish(h, libsmb2, &wait, NULL);
 +    if (ret < 0) {
 +        av_log(h, AV_LOG_ERROR, "smb2 connect share failed: %s\n",
 +               libsmb2->ctx ? smb2_get_error(libsmb2->ctx) : "cancelled");
-+        if (ret != AVERROR_EXIT)
-+            ret = AVERROR(ECONNREFUSED);
 +        goto failed;
 +    }
  
@@ -318,11 +330,8 @@ index 408f9e1..d1a51c4 100644
              goto failed;
          }
 +        ret = smb2_wait_finish(h, libsmb2, &wait, &fh);
-+        if (ret < 0) {
-+            if (ret != AVERROR_EXIT)
-+                ret = AVERROR(ENOENT);
++        if (ret < 0)
 +            goto failed;
-+        }
 +        libsmb2->fh = fh;
      }
  
