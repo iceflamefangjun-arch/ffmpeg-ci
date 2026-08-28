@@ -278,7 +278,8 @@ index 408f9e1..d1a51c4 100644
 +        av_free(wait);
 +        wait = NULL;
          av_log(h, AV_LOG_ERROR, "smb2 connect share failed: %s\n", smb2_get_error(libsmb2->ctx));
-         ret = AVERROR(EIO);
+-        ret = AVERROR(ECONNREFUSED);
++        ret = AVERROR(EIO);
          goto failed;
      }
 +    ret = smb2_wait_finish(h, libsmb2, &wait, NULL);

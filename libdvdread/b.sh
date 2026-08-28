@@ -57,6 +57,10 @@ popd
 
 patch --batch -N -d ${DEPENDSPATH}/libdvdread -p1 <${CURRENTPATH}/ssize_t.patch || exit
 patch --batch -N -d ${DEPENDSPATH}/libdvdread -p1 <${CURRENTPATH}/unistd.patch || exit
+# MSVC/clang-cl allocates unsigned int bitfields in 4-byte units, inflating
+# playback_type_t from 1 to 4 bytes and title_info_t from 12 to 15 bytes,
+# which makes ifoRead_TT_SRPT truncate nr_of_srpts (info_length/sizeof = 0).
+patch --batch -N -d ${DEPENDSPATH}/libdvdread -p1 <${CURRENTPATH}/msvc-bitfield-sizeof.patch || exit
 
 ############################################################################################
 for ((i=0; i<${#archs[@]}; i++))
