@@ -115,9 +115,9 @@ else
 fi
 ############################################################################################
 
-trap "cd \"${FFMPEG_SRC_DIR}\" && git reset --hard && rm -f libavcodec/{av3a.h,av3a_parser.c} libavformat/{application.c,application.h,av3adec.c,bluray_custom_fs.c,bluray_custom_fs.h,dns_cache.c,dns_cache.h,drm_plugin.c,ijkutils.c,libsmb2.c,lrucache.c,lrucache.h,umd.c,dvd.c,bluray_util.h} libavutil/{application.h,application.c}" EXIT
+trap "cd \"${FFMPEG_SRC_DIR}\" && git reset --hard && rm -f libavcodec/{av3a.h,av3a_parser.c} libavformat/{application.c,application.h,av3adec.c,bluray_custom_fs.c,bluray_custom_fs.h,dns_cache.c,dns_cache.h,drm_plugin.c,ijkutils.c,libsmb2.c,lrucache.c,lrucache.h,umd.c,dvd.c,bluray_util.h,disc_io.c,disc_io.h,dvdvideo_stream_io.c} libavutil/{application.h,application.c}" EXIT
 pushd "${FFMPEG_SRC_DIR}"
-git reset --hard && rm -f libavcodec/{av3a.h,av3a_parser.c} libavformat/{application.c,application.h,av3adec.c,bluray_custom_fs.c,bluray_custom_fs.h,dns_cache.c,dns_cache.h,drm_plugin.c,ijkutils.c,libsmb2.c,lrucache.c,lrucache.h,umd.c}
+git reset --hard && rm -f libavcodec/{av3a.h,av3a_parser.c} libavformat/{application.c,application.h,av3adec.c,bluray_custom_fs.c,bluray_custom_fs.h,dns_cache.c,dns_cache.h,drm_plugin.c,ijkutils.c,libsmb2.c,lrucache.c,lrucache.h,umd.c,dvd.c,bluray_util.h,disc_io.c,disc_io.h,dvdvideo_stream_io.c}
 sed -i '/test "\$cc_type" != "\$ld_type" && die "LTO requires same compiler and linker"/d' configure
 popd
 
@@ -174,6 +174,12 @@ echo "Applying patch 0027-mov-auxiliary_info_sample_count-is-not-required.patch.
 patch -d "${FFMPEG_SRC_DIR}" -p1 <${CURRENTPATH}/0027-mov-auxiliary_info_sample_count-is-not-required.patch || exit
 echo "Applying patch 0029-fix-bluray-playlist-and-add-umd-video.patch..."
 patch -d "${FFMPEG_SRC_DIR}" -p1 <${CURRENTPATH}/0029-fix-bluray-playlist-and-add-umd-video.patch || exit
+echo "Applying patch 0030-cancellable-smb2-io.patch..."
+patch -d "${FFMPEG_SRC_DIR}" -p1 <${CURRENTPATH}/0030-cancellable-smb2-io.patch || exit
+echo "Applying patch 0031-unify-disc-io-and-probe.patch..."
+patch -d "${FFMPEG_SRC_DIR}" -p1 <${CURRENTPATH}/0031-unify-disc-io-and-probe.patch || exit
+echo "Applying patch 0032-dvdvideo-stream-bridge.patch..."
+patch -d "${FFMPEG_SRC_DIR}" -p1 <${CURRENTPATH}/0032-dvdvideo-stream-bridge.patch || exit
 
 # clang-cl is detected by FFmpeg's configure script as an MSVC-compatible
 # compiler rather than as clang.  Therefore, its upstream clang-only ThinLTO

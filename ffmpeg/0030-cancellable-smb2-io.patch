@@ -1,0 +1,621 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: shplayer <shplayer@local>
+Date: Fri, 28 Aug 2026 00:00:00 +0800
+Subject: [PATCH] cancellable smb2 io via async API and WSAPoll
+
+diff --git a/libavformat/libsmb2.c b/libavformat/libsmb2.c
+index 408f9e1..d1a51c4 100644
+--- a/libavformat/libsmb2.c
++++ b/libavformat/libsmb2.c
+@@ -18,23 +18,36 @@
+  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+  */
+ 
++#include "config.h"
++
++#ifdef _WIN32
++#include <winsock2.h>
++#endif
+ 
+ #include <fcntl.h>
+ #include <errno.h>
++#include <string.h>
+ #include "libavutil/avstring.h"
+ #include "libavutil/opt.h"
+ #include "libavutil/mem.h"
++#include "libavutil/time.h"
+ #include "application.h"
+ #include "url.h"
+ #include "urldecode.h"
+-//smb2.h:37:9: error: unknown type name 'time_t';
++#include "internal.h"
+ #include <time.h>
+ #include <smb2/smb2.h>
+ #include <smb2/libsmb2.h>
+ #include <smb2/libsmb2-raw.h>
+ 
+-typedef struct
+-{
++typedef struct SMB2Wait {
++    volatile int done;
++    volatile int abandoned;
++    int status;
++    void *data;
++} SMB2Wait;
++
++typedef struct {
+     const AVClass *class;
+ 
+     struct smb2_context *ctx;
+@@ -46,25 +59,125 @@ typedef struct
+     char *app_ctx_intptr;
+     AVApplicationContext *app_ctx;
+     int smb2_seal;
++    int abort_request;
++    int64_t last_io_us;
+ } LIBSMB2Context;
+ 
+-static void destroy_smb2(LIBSMB2Context *libsmb2)
++static void smb2_wait_cb(struct smb2_context *smb2, int status,
++                         void *command_data, void *cb_data)
+ {
+-    if (libsmb2->fh && libsmb2->ctx) {
+-        smb2_close(libsmb2->ctx, libsmb2->fh);
+-    }
++    SMB2Wait *wait = cb_data;
++    wait->status = status;
++    wait->data = command_data;
++    wait->done = 1;
++    if (wait->abandoned)
++        av_free(wait);
++}
+ 
++static void destroy_smb2_context(LIBSMB2Context *libsmb2)
++{
+     if (libsmb2->ctx) {
+-        smb2_disconnect_share(libsmb2->ctx);
+         smb2_destroy_context(libsmb2->ctx);
++        libsmb2->ctx = NULL;
+     }
++    libsmb2->fh = NULL;
++    libsmb2->dir = NULL;
++}
+ 
++static int smb2_poll_once(URLContext *h, LIBSMB2Context *libsmb2)
++{
++#ifdef _WIN32
++    WSAPOLLFD pfd;
++    int events, ret, revents = 0;
++    t_socket fd;
++
++    fd = smb2_get_fd(libsmb2->ctx);
++    events = smb2_which_events(libsmb2->ctx);
++    memset(&pfd, 0, sizeof(pfd));
++    pfd.fd = (SOCKET)fd;
++    if (events & POLLIN)
++        pfd.events |= POLLRDNORM;
++    if (events & POLLOUT)
++        pfd.events |= POLLWRNORM;
++    ret = WSAPoll(&pfd, 1, 100);
++    if (ret < 0)
++        return AVERROR(EIO);
++    if (ret == 0)
++        return 0;
++    if (pfd.revents & (POLLRDNORM | POLLIN))
++        revents |= POLLIN;
++    if (pfd.revents & (POLLWRNORM | POLLOUT))
++        revents |= POLLOUT;
++    if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL))
++        revents |= POLLERR;
++    if (smb2_service(libsmb2->ctx, revents) < 0)
++        return AVERROR(EIO);
++    return 0;
++#else
++    struct pollfd pfd;
++    int events, ret;
++    t_socket fd;
++
++    fd = smb2_get_fd(libsmb2->ctx);
++    events = smb2_which_events(libsmb2->ctx);
++    memset(&pfd, 0, sizeof(pfd));
++    pfd.fd = fd;
++    pfd.events = events;
++    ret = poll(&pfd, 1, 100);
++    if (ret < 0)
++        return AVERROR(errno);
++    if (ret == 0)
++        return 0;
++    if (smb2_service(libsmb2->ctx, pfd.revents) < 0)
++        return AVERROR(EIO);
++    return 0;
++#endif
++}
++
++static int smb2_wait_finish(URLContext *h, LIBSMB2Context *libsmb2, SMB2Wait **pwait,
++                            void **out_data)
++{
++    SMB2Wait *wait = *pwait;
++    int ret;
++
++    while (!wait->done) {
++        if (libsmb2->abort_request || ff_check_interrupt(&h->interrupt_callback)) {
++            wait->abandoned = 1;
++            *pwait = NULL;
++            destroy_smb2_context(libsmb2);
++            return AVERROR_EXIT;
++        }
++        if (h->rw_timeout > 0 && libsmb2->last_io_us > 0 &&
++            av_gettime_relative() - libsmb2->last_io_us > h->rw_timeout) {
++            wait->abandoned = 1;
++            *pwait = NULL;
++            destroy_smb2_context(libsmb2);
++            return AVERROR(ETIMEDOUT);
++        }
++        ret = smb2_poll_once(h, libsmb2);
++        if (ret < 0) {
++            wait->abandoned = 1;
++            *pwait = NULL;
++            destroy_smb2_context(libsmb2);
++            return ret;
++        }
++    }
++    if (out_data)
++        *out_data = wait->data;
++    ret = wait->status;
++    av_free(wait);
++    *pwait = NULL;
++    return ret;
++}
++
++static void destroy_smb2(LIBSMB2Context *libsmb2)
++{
++    libsmb2->abort_request = 1;
++    destroy_smb2_context(libsmb2);
+     if (libsmb2->url) {
+         smb2_destroy_url(libsmb2->url);
++        libsmb2->url = NULL;
+     }
+-    libsmb2->fh = NULL;
+-    libsmb2->ctx = NULL;
+-    libsmb2->url = NULL;
+ }
+ 
+ static av_cold int libsmb2_close(URLContext *h)
+@@ -78,20 +191,29 @@ static av_cold int libsmb2_open(URLContext *h, const char *uri, int flags)
+ {
+     int ret = 0;
+     LIBSMB2Context *libsmb2 = h->priv_data;
++    SMB2Wait *wait = NULL;
++    struct smb2_stat_64 *st = NULL;
++    int access;
++    const char *smb_url;
++    struct smb2_url *url;
++
+     libsmb2->filesize = -1;
++    libsmb2->abort_request = 0;
++    libsmb2->last_io_us = av_gettime_relative();
+     libsmb2->ctx = smb2_init_context();
+     libsmb2->app_ctx = (AVApplicationContext *)av_dict_strtoptr(libsmb2->app_ctx_intptr);
+ 
+     av_application_will_http_open(libsmb2->app_ctx, (void *)h, uri);
+ 
+     if (!libsmb2->ctx) {
+-        av_log(h, AV_LOG_ERROR, "smb2 create context failed: %s.\n", smb2_get_error(libsmb2->ctx));
++        av_log(h, AV_LOG_ERROR, "smb2 create context failed\n");
+         ret = AVERROR(ENOMEM);
+         goto failed;
+     }
+ 
+-    const char *smb_url = av_strireplace(uri, "smb2", "smb");
+-    struct smb2_url *url = smb2_parse_url(libsmb2->ctx, smb_url);
++    smb_url = av_strireplace(uri, "smb2", "smb");
++    url = smb2_parse_url(libsmb2->ctx, smb_url);
++    av_free((void *)smb_url);
+ 
+     if (url == NULL) {
+         av_log(h, AV_LOG_ERROR, "smb2 parse url failed: %s\n", smb2_get_error(libsmb2->ctx));
+@@ -106,89 +228,129 @@ static av_cold int libsmb2_open(URLContext *h, const char *uri, int flags)
+                 if (strlen(password) > 0) {
+                     password = ff_urldecode(password, 0);
+                     smb2_set_password(libsmb2->ctx, password);
++                    av_free(password);
+                 }
+             }
+         }
+ 
+-        if (url->domain) {
++        if (url->domain)
+             smb2_set_domain(libsmb2->ctx, url->domain);
+-        }
+ 
+         if (url->share) {
+             char *share = ff_urldecode(url->share, 0);
+             memset(url->share, 0, strlen(url->share));
+             memcpy(url->share, share, strlen(share));
++            av_free(share);
+         }
+ 
+         if (url->path) {
+             char *path = ff_urldecode(url->path, 0);
+             memset(url->path, 0, strlen(url->path));
+             memcpy(url->path, path, strlen(path));
++            av_free(path);
+         }
+ 
+         libsmb2->url = url;
+     }
+ 
+-    //https://github.com/sahlberg/libsmb2/issues/271
+-    //fix Very slow performance w/MacOS SMB server
+-    //smb2_set_security_mode(libsmb2->ctx, SMB2_NEGOTIATE_SIGNING_ENABLED);
+     smb2_set_seal(libsmb2->ctx, libsmb2->smb2_seal);
+-    smb2_set_authentication(libsmb2->ctx, 1);//SMB2_SEC_NTLMSSP
++    smb2_set_authentication(libsmb2->ctx, 1);
+     smb2_set_timeout(libsmb2->ctx, 60);
+ 
+-    if (smb2_connect_share(libsmb2->ctx, url->server, url->share, url->user) != 0) {
++    wait = av_mallocz(sizeof(*wait));
++    if (!wait) {
++        ret = AVERROR(ENOMEM);
++        goto failed;
++    }
++    if (smb2_connect_share_async(libsmb2->ctx, url->server, url->share,
++                                 url->user, smb2_wait_cb, wait) != 0) {
++        av_free(wait);
++        wait = NULL;
+         av_log(h, AV_LOG_ERROR, "smb2 connect share failed: %s\n", smb2_get_error(libsmb2->ctx));
+         ret = AVERROR(ECONNREFUSED);
+         goto failed;
+     }
++    ret = smb2_wait_finish(h, libsmb2, &wait, NULL);
++    if (ret < 0) {
++        av_log(h, AV_LOG_ERROR, "smb2 connect share failed: %s\n",
++               libsmb2->ctx ? smb2_get_error(libsmb2->ctx) : "cancelled");
++        if (ret != AVERROR_EXIT)
++            ret = AVERROR(ECONNREFUSED);
++        goto failed;
++    }
+ 
+-    int access;
+-    if ((flags & AVIO_FLAG_WRITE) && (flags & AVIO_FLAG_READ)) {
++    if ((flags & AVIO_FLAG_WRITE) && (flags & AVIO_FLAG_READ))
+         access = O_CREAT | O_RDWR;
+-    } else if (flags & AVIO_FLAG_WRITE) {
++    else if (flags & AVIO_FLAG_WRITE)
+         access = O_CREAT | O_WRONLY;
+-    } else {
++    else
+         access = O_RDONLY;
+-    }
+ 
++    wait = av_mallocz(sizeof(*wait));
++    if (!wait) {
++        ret = AVERROR(ENOMEM);
++        goto failed;
++    }
+     if (flags & AVIO_FLAG_DIRECT) {
+-        if ((libsmb2->dir = smb2_opendir(libsmb2->ctx, url->path)) == NULL) {
+-            av_log(h, AV_LOG_ERROR, "smb2 open dir failed: %s, error: %s\n", url->path, smb2_get_error(libsmb2->ctx));
++        void *dir = NULL;
++        if (smb2_opendir_async(libsmb2->ctx, url->path, smb2_wait_cb, wait) != 0) {
++            av_free(wait);
++            wait = NULL;
+             ret = AVERROR(ENOTDIR);
+             goto failed;
+         }
++        ret = smb2_wait_finish(h, libsmb2, &wait, &dir);
++        if (ret < 0)
++            goto failed;
++        libsmb2->dir = dir;
+     } else {
+-        if ((libsmb2->fh = smb2_open(libsmb2->ctx, url->path, access)) == NULL) {
+-            av_log(h, AV_LOG_ERROR, "smb2 open file failed: %s, error: %s\n", url->path, smb2_get_error(libsmb2->ctx));
++        void *fh = NULL;
++        if (smb2_open_async(libsmb2->ctx, url->path, access, smb2_wait_cb, wait) != 0) {
++            av_free(wait);
++            wait = NULL;
+             ret = AVERROR(ENOENT);
+             goto failed;
+         }
++        ret = smb2_wait_finish(h, libsmb2, &wait, &fh);
++        if (ret < 0) {
++            if (ret != AVERROR_EXIT)
++                ret = AVERROR(ENOENT);
++            goto failed;
++        }
++        libsmb2->fh = fh;
+     }
+ 
+-    struct smb2_stat_64 st = {0};
+-
+-    if (smb2_stat(libsmb2->ctx, url->path, &st) < 0)
++    st = av_mallocz(sizeof(*st));
++    wait = av_mallocz(sizeof(*wait));
++    if (!st || !wait) {
++        av_free(st);
++        av_free(wait);
++        wait = NULL;
++        ret = AVERROR(ENOMEM);
++        goto failed;
++    }
++    if (smb2_stat_async(libsmb2->ctx, url->path, st, smb2_wait_cb, wait) != 0) {
++        av_free(st);
++        av_free(wait);
++        wait = NULL;
+         av_log(h, AV_LOG_WARNING, "Cannot stat file: %s\n", smb2_get_error(libsmb2->ctx));
+-    else
+-        libsmb2->filesize = st.smb2_size;
++    } else {
++        ret = smb2_wait_finish(h, libsmb2, &wait, NULL);
++        if (ret < 0) {
++            av_free(st);
++            goto failed;
++        }
++        libsmb2->filesize = st->smb2_size;
++        av_free(st);
++        libsmb2->last_io_us = av_gettime_relative();
++    }
++
+     av_application_did_http_open(libsmb2->app_ctx, (void *)h, uri, 0, 200, libsmb2->filesize);
+     return 0;
+ failed:
+     av_application_did_http_open(libsmb2->app_ctx, (void *)h, uri, ret, 500, 0);
+-    if (libsmb2->fh && libsmb2->ctx) {
+-        smb2_close(libsmb2->ctx, libsmb2->fh);
+-    }
+-    if (libsmb2->ctx) {
+-        smb2_disconnect_share(libsmb2->ctx);
+-        smb2_destroy_context(libsmb2->ctx);
+-    }
+-    if (libsmb2->url) {
+-        smb2_destroy_url(libsmb2->url);
+-    }
+-    libsmb2->fh = NULL;
+-    libsmb2->ctx = NULL;
+-    libsmb2->url = NULL;
+-    return -1;
++    destroy_smb2(libsmb2);
++    return ret < 0 ? ret : AVERROR(EIO);
+ }
+ 
+ static int64_t libsmb2_seek(URLContext *h, int64_t pos, int whence)
+@@ -197,14 +359,16 @@ static int64_t libsmb2_seek(URLContext *h, int64_t pos, int whence)
+     int64_t newpos;
+ 
+     if (whence == AVSEEK_SIZE) {
+-        if (libsmb2->filesize == -1) {
++        if (libsmb2->filesize == (uint64_t)-1) {
+             av_log(h, AV_LOG_ERROR, "smb2 seek failed,filesize is unknown.\n");
+             return AVERROR(EIO);
+-        } else {
+-            return libsmb2->filesize;
+         }
++        return libsmb2->filesize;
+     }
+ 
++    if (!libsmb2->ctx || !libsmb2->fh)
++        return AVERROR(EIO);
++
+     av_application_will_http_seek(libsmb2->app_ctx, (void *)h, h->filename, pos);
+ 
+     if ((newpos = smb2_lseek(libsmb2->ctx, libsmb2->fh, pos, whence, NULL)) < 0) {
+@@ -212,6 +376,7 @@ static int64_t libsmb2_seek(URLContext *h, int64_t pos, int whence)
+         av_application_did_http_seek(libsmb2->app_ctx, (void *)h, h->filename, pos, AVERROR(errno), 500);
+         return AVERROR(errno);
+     }
++    libsmb2->last_io_us = av_gettime_relative();
+     av_application_did_http_seek(libsmb2->app_ctx, (void *)h, h->filename, pos, 0, 200);
+     return newpos;
+ }
+@@ -219,32 +384,59 @@ static int64_t libsmb2_seek(URLContext *h, int64_t pos, int whence)
+ static int libsmb2_read(URLContext *h, unsigned char *buf, int size)
+ {
+     LIBSMB2Context *libsmb2 = h->priv_data;
+-
+     uint8_t *buf1 = buf;
+     int buf_size1 = size;
+     int has_error = 0;
++    uint32_t max_read;
++
++    if (libsmb2->abort_request || ff_check_interrupt(&h->interrupt_callback))
++        return AVERROR_EXIT;
++    if (!libsmb2->ctx || !libsmb2->fh)
++        return AVERROR(EIO);
++
++    max_read = smb2_get_max_read_size(libsmb2->ctx);
++    if (max_read == 0)
++        max_read = 1024 * 1024;
+ 
+     while (buf_size1 > 0) {
+-        int read = smb2_read(libsmb2->ctx, libsmb2->fh, buf1, buf_size1);
+-        if (read < 0) {
+-            av_log(h, AV_LOG_ERROR, "smb2 read file failed: %s\n",
+-                   smb2_get_error(libsmb2->ctx));
++        SMB2Wait *wait;
++        uint32_t chunk;
++        int n;
++
++        chunk = buf_size1 < (int)max_read ? (uint32_t)buf_size1 : max_read;
++        wait = av_mallocz(sizeof(*wait));
++        if (!wait) {
+             has_error = 1;
+             break;
+         }
+-        if (read == 0) {
+-            // eof
++        if (smb2_read_async(libsmb2->ctx, libsmb2->fh, buf1, chunk,
++                            smb2_wait_cb, wait) != 0) {
++            av_free(wait);
++            has_error = 1;
++            break;
++        }
++        n = smb2_wait_finish(h, libsmb2, &wait, NULL);
++        if (n < 0) {
++            if (n == AVERROR_EXIT || n == AVERROR(ETIMEDOUT))
++                return n;
++            av_log(h, AV_LOG_ERROR, "smb2 read file failed: %s\n",
++                   libsmb2->ctx ? smb2_get_error(libsmb2->ctx) : "cancelled");
++            has_error = 1;
+             break;
+         }
+-        buf1 += read;
+-        buf_size1 -= read;
++        if (n == 0)
++            break;
++        buf1 += n;
++        buf_size1 -= n;
++        libsmb2->last_io_us = av_gettime_relative();
+     }
+ 
+-    int bytes_read = size - buf_size1;
+-    if (bytes_read > 0)
+-        av_application_did_io_tcp_read(libsmb2->app_ctx, (void*)h, bytes_read);
+-
+-    return bytes_read ? bytes_read : (has_error ? AVERROR(ENOTCONN) : AVERROR_EOF);
++    {
++        int bytes_read = size - buf_size1;
++        if (bytes_read > 0)
++            av_application_did_io_tcp_read(libsmb2->app_ctx, (void *)h, bytes_read);
++        return bytes_read ? bytes_read : (has_error ? AVERROR(ENOTCONN) : AVERROR_EOF);
++    }
+ }
+ 
+ static int libsmb2_write(URLContext *h, const unsigned char *buf, int size)
+@@ -252,67 +444,86 @@ static int libsmb2_write(URLContext *h, const unsigned char *buf, int size)
+     LIBSMB2Context *libsmb2 = h->priv_data;
+     int bytes_written;
+ 
++    if (!libsmb2->ctx || !libsmb2->fh)
++        return AVERROR(EIO);
+     if ((bytes_written = smb2_write(libsmb2->ctx, libsmb2->fh, buf, size)) < 0) {
+         int ret = AVERROR(errno);
+         av_log(h, AV_LOG_ERROR, "smb2 write failed: %s\n", strerror(errno));
+         return ret;
+     }
+-
+     return bytes_written;
+ }
+ 
+ static int libsmb2_delete(URLContext *h)
+ {
+     LIBSMB2Context *libsmb2 = h->priv_data;
++    struct smb2_url *url;
++    char *path;
++    int ret;
+ 
+-    struct smb2_url *url = smb2_parse_url(libsmb2->ctx, h->filename);
++    if (!libsmb2->ctx)
++        return AVERROR(EIO);
++    url = smb2_parse_url(libsmb2->ctx, h->filename);
+     if (url == NULL) {
+         av_log(h, AV_LOG_ERROR, "smb2 parse url failed: %s\n",
+-                smb2_get_error(libsmb2->ctx));
++               smb2_get_error(libsmb2->ctx));
+         return -1;
+-    } else {
+-        char *path = ff_urldecode(url->path, 0);
+-        return smb2_unlink(libsmb2->ctx, path);
+     }
++    path = ff_urldecode(url->path, 0);
++    ret = smb2_unlink(libsmb2->ctx, path);
++    av_free(path);
++    smb2_destroy_url(url);
++    return ret;
+ }
+ 
+ static int libsmb2_move(URLContext *h_src, URLContext *h_dst)
+ {
+     LIBSMB2Context *libsmb2 = h_src->priv_data;
+-    if (!libsmb2)
+-    {
+-        return -1;
+-    }
++    struct smb2_url *src_url, *dst_url;
++    char *src_path, *dst_path;
++    int ret;
+ 
+-    struct smb2_url *src_url = smb2_parse_url(libsmb2->ctx, h_src->filename);
+-    struct smb2_url *dst_url = smb2_parse_url(libsmb2->ctx, h_dst->filename);
++    if (!libsmb2 || !libsmb2->ctx)
++        return -1;
+ 
++    src_url = smb2_parse_url(libsmb2->ctx, h_src->filename);
++    dst_url = smb2_parse_url(libsmb2->ctx, h_dst->filename);
+     if (src_url == NULL || dst_url == NULL) {
+         av_log(h_src, AV_LOG_ERROR, "smb2 parse url failed: %s\n", smb2_get_error(libsmb2->ctx));
+         return -2;
+-    } else {
+-        char *src_path = ff_urldecode(src_url->path, 0);
+-        char *dst_path = ff_urldecode(dst_url->path, 0);
+-        return smb2_rename(libsmb2->ctx, src_path, dst_path);
+     }
++    src_path = ff_urldecode(src_url->path, 0);
++    dst_path = ff_urldecode(dst_url->path, 0);
++    ret = smb2_rename(libsmb2->ctx, src_path, dst_path);
++    av_free(src_path);
++    av_free(dst_path);
++    smb2_destroy_url(src_url);
++    smb2_destroy_url(dst_url);
++    return ret;
+ }
+ 
+ static int libsmb2_open_dir(URLContext *h)
+ {
+     LIBSMB2Context *libsmb2 = h->priv_data;
+-    struct smb2_url *url = smb2_parse_url(libsmb2->ctx, h->filename);
++    struct smb2_url *url;
++    char *path;
++
++    if (!libsmb2->ctx)
++        return AVERROR(EIO);
++    url = smb2_parse_url(libsmb2->ctx, h->filename);
+     if (url == NULL) {
+         av_log(h, AV_LOG_ERROR, "smb2 parse url failed: %s\n", smb2_get_error(libsmb2->ctx));
+         return -1;
+-    } else {
+-        char *path = ff_urldecode(url->path, 0);
+-        libsmb2->dir = smb2_opendir(libsmb2->ctx, path);
+-        if (!libsmb2->dir){
+-            av_log(h, AV_LOG_ERROR, "smb2 open dir failed: %s\n", smb2_get_error(libsmb2->ctx));
+-            return 0;
+-        }
+-        return AVERROR(ENOTDIR);
+     }
++    path = ff_urldecode(url->path, 0);
++    libsmb2->dir = smb2_opendir(libsmb2->ctx, path);
++    av_free(path);
++    smb2_destroy_url(url);
++    if (!libsmb2->dir) {
++        av_log(h, AV_LOG_ERROR, "smb2 open dir failed: %s\n", smb2_get_error(libsmb2->ctx));
++        return 0;
++    }
++    return AVERROR(ENOTDIR);
+ }
+ 
+ static int libsmb2_read_dir(URLContext *h, AVIODirEntry **next)
+@@ -321,6 +532,7 @@ static int libsmb2_read_dir(URLContext *h, AVIODirEntry **next)
+     AVIODirEntry *entry;
+     struct smb2dirent *dirent = NULL;
+     int skip_entry;
++    struct smb2_stat_64 st;
+ 
+     *next = entry = ff_alloc_dir_entry();
+     if (!entry)
+@@ -341,7 +553,7 @@ static int libsmb2_read_dir(URLContext *h, AVIODirEntry **next)
+         return AVERROR(ENOMEM);
+     }
+ 
+-    struct smb2_stat_64 st = dirent->st;
++    st = dirent->st;
+     switch (st.smb2_type) {
+     case SMB2_TYPE_DIRECTORY:
+         entry->type = AVIO_ENTRY_DIRECTORY;
+@@ -371,7 +583,7 @@ static int libsmb2_read_dir(URLContext *h, AVIODirEntry **next)
+ static int libsmb2_close_dir(URLContext *h)
+ {
+     LIBSMB2Context *libsmb2 = h->priv_data;
+-    if (libsmb2->dir) {
++    if (libsmb2->dir && libsmb2->ctx) {
+         smb2_closedir(libsmb2->ctx, libsmb2->dir);
+         libsmb2->dir = NULL;
+     }
