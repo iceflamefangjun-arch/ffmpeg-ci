@@ -267,7 +267,9 @@ index 0000000..28120c6
 +    DiscIO *io = fs_handle;
 +    int want = num_blocks * ISO_SECTOR_SIZE;
 +    int n = ff_disc_io_read(io, (int64_t)lba * ISO_SECTOR_SIZE, buf, want);
-+    return n == want ? 0 : -1;
++    if (n < 0)
++        return n;
++    return n / ISO_SECTOR_SIZE;
 +}
 +
 +static int confirm_bluray(DiscIO *io)
