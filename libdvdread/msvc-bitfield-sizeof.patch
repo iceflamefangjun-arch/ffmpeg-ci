@@ -1,10 +1,110 @@
 diff --git a/src/dvdread/ifo_types.h b/src/dvdread/ifo_types.h
-index fca1b8b..9d96bd7 100644
 --- a/src/dvdread/ifo_types.h
 +++ b/src/dvdread/ifo_types.h
-@@ -440,14 +440,14 @@ typedef struct {
+@@ -23,6 +23,7 @@
+ #define LIBDVDREAD_IFO_TYPES_H
+
+ #include <inttypes.h>
++#include <stddef.h>
+ #include "dvdread/dvd_reader.h"
+
+
+@@ -132,29 +133,29 @@
+  * MultiChannel Extension
+  */
+ typedef struct {
+-  unsigned int zero1      : 7;
+-  unsigned int ach0_gme   : 1;
+-
+-  unsigned int zero2      : 7;
+-  unsigned int ach1_gme   : 1;
+-
+-  unsigned int zero3      : 4;
+-  unsigned int ach2_gv1e  : 1;
+-  unsigned int ach2_gv2e  : 1;
+-  unsigned int ach2_gm1e  : 1;
+-  unsigned int ach2_gm2e  : 1;
+-
+-  unsigned int zero4      : 4;
+-  unsigned int ach3_gv1e  : 1;
+-  unsigned int ach3_gv2e  : 1;
+-  unsigned int ach3_gmAe  : 1;
+-  unsigned int ach3_se2e  : 1;
+-
+-  unsigned int zero5      : 4;
+-  unsigned int ach4_gv1e  : 1;
+-  unsigned int ach4_gv2e  : 1;
+-  unsigned int ach4_gmBe  : 1;
+-  unsigned int ach4_seBe  : 1;
++  unsigned char zero1      : 7;
++  unsigned char ach0_gme   : 1;
++
++  unsigned char zero2      : 7;
++  unsigned char ach1_gme   : 1;
++
++  unsigned char zero3      : 4;
++  unsigned char ach2_gv1e  : 1;
++  unsigned char ach2_gv2e  : 1;
++  unsigned char ach2_gm1e  : 1;
++  unsigned char ach2_gm2e  : 1;
++
++  unsigned char zero4      : 4;
++  unsigned char ach3_gv1e  : 1;
++  unsigned char ach3_gv2e  : 1;
++  unsigned char ach3_gmAe  : 1;
++  unsigned char ach3_se2e  : 1;
++
++  unsigned char zero5      : 4;
++  unsigned char ach4_gv1e  : 1;
++  unsigned char ach4_gv2e  : 1;
++  unsigned char ach4_gmBe  : 1;
++  unsigned char ach4_seBe  : 1;
+   uint8_t zero6[19];
+ } ATTRIBUTE_PACKED multichannel_ext_t;
+
+@@ -207,16 +208,16 @@
+  * Cell Playback Information.
+  */
+ typedef struct {
+-  unsigned int block_mode       : 2;
+-  unsigned int block_type       : 2;
+-  unsigned int seamless_play    : 1;
+-  unsigned int interleaved      : 1;
+-  unsigned int stc_discontinuity: 1;
+-  unsigned int seamless_angle   : 1;
+-  unsigned int zero_1           : 1;
+-  unsigned int playback_mode    : 1;  /**< When set, enter StillMode after each VOBU */
+-  unsigned int restricted       : 1;  /**< ?? drop out of fastforward? */
+-  unsigned int cell_type        : 5;  /** for karaoke, reserved otherwise */
++  unsigned char block_mode       : 2;
++  unsigned char block_type       : 2;
++  unsigned char seamless_play    : 1;
++  unsigned char interleaved      : 1;
++  unsigned char stc_discontinuity: 1;
++  unsigned char seamless_angle   : 1;
++  unsigned char zero_1           : 1;
++  unsigned char playback_mode    : 1;  /**< When set, enter StillMode after each VOBU */
++  unsigned char restricted       : 1;  /**< ?? drop out of fastforward? */
++  unsigned char cell_type        : 5;  /** for karaoke, reserved otherwise */
+   uint8_t still_time;
+   uint8_t cell_cmd_nr;
+   dvd_time_t playback_time;
+@@ -312,9 +313,9 @@
+  */
+ typedef struct {
+   uint8_t  entry_id;
+-  unsigned int block_mode : 2;
+-  unsigned int block_type : 2;
+-  unsigned int zero_1   : 4;
++  unsigned char block_mode : 2;
++  unsigned char block_type : 2;
++  unsigned char zero_1   : 4;
+   uint16_t ptl_id_mask;
+   uint32_t pgc_start_byte;
+   pgc_t *pgc;
+@@ -440,14 +441,14 @@
  } ATTRIBUTE_PACKED vmgi_mat_t;
- 
+
  typedef struct {
 -  unsigned int zero_1                    : 1;
 -  unsigned int multi_or_random_pgc_title : 1; /* 0: one sequential pgc title */
@@ -23,5 +123,33 @@ index fca1b8b..9d96bd7 100644
 +  unsigned char chapter_search_or_play    : 1; /* UOP 1 */
 +  unsigned char title_or_time_play        : 1; /* UOP 0 */
  } ATTRIBUTE_PACKED playback_type_t;
- 
+
  /**
+@@ -752,4 +753,27 @@
+   vobu_admap_t   *vts_vobu_admap;
+ } ifo_handle_t;
+
++/* Disk record layouts must agree in libdvdread, libdvdnav and FFmpeg.
++ * In particular, MSVC unsigned-int bitfields must not enlarge byte fields. */
++#define DVDREAD_LAYOUT_ASSERT(name, condition) \
++  typedef char dvdread_layout_##name[(condition) ? 1 : -1]
++DVDREAD_LAYOUT_ASSERT(dvd_time, sizeof(dvd_time_t) == 4);
++DVDREAD_LAYOUT_ASSERT(video_attr, sizeof(video_attr_t) == 2);
++DVDREAD_LAYOUT_ASSERT(audio_attr, sizeof(audio_attr_t) == 8);
++DVDREAD_LAYOUT_ASSERT(subp_attr, sizeof(subp_attr_t) == 6);
++DVDREAD_LAYOUT_ASSERT(multichannel_ext, sizeof(multichannel_ext_t) == 24);
++DVDREAD_LAYOUT_ASSERT(cell_playback, sizeof(cell_playback_t) == 24);
++DVDREAD_LAYOUT_ASSERT(cell_time, offsetof(cell_playback_t, playback_time) == 4);
++DVDREAD_LAYOUT_ASSERT(cell_first_sector, offsetof(cell_playback_t, first_sector) == 8);
++DVDREAD_LAYOUT_ASSERT(cell_last_sector, offsetof(cell_playback_t, last_sector) == 20);
++DVDREAD_LAYOUT_ASSERT(cell_position, sizeof(cell_position_t) == 4);
++DVDREAD_LAYOUT_ASSERT(user_ops, sizeof(user_ops_t) == 4);
++DVDREAD_LAYOUT_ASSERT(pgc_disk_prefix, offsetof(pgc_t, command_tbl) == PGC_SIZE);
++DVDREAD_LAYOUT_ASSERT(pgci_mask, offsetof(pgci_srp_t, ptl_id_mask) == 2);
++DVDREAD_LAYOUT_ASSERT(pgci_start, offsetof(pgci_srp_t, pgc_start_byte) == 4);
++DVDREAD_LAYOUT_ASSERT(pgci_disk_prefix, offsetof(pgci_srp_t, pgc) == PGCI_SRP_SIZE);
++DVDREAD_LAYOUT_ASSERT(playback_type, sizeof(playback_type_t) == 1);
++DVDREAD_LAYOUT_ASSERT(title_info, sizeof(title_info_t) == 12);
++#undef DVDREAD_LAYOUT_ASSERT
++
+ #endif /* LIBDVDREAD_IFO_TYPES_H */

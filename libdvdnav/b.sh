@@ -1,5 +1,6 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
 cd "${SCRIPT_DIR}" || exit 1
+set -o pipefail
 source "${SCRIPT_DIR}/../env_config.sh"
 
 CURRENTPATH="${SCRIPT_DIR}"
@@ -103,12 +104,18 @@ do
     export PKG_CONFIG_PATH="${CURRENTPATH}/../libudfread/${OUTPUT}/lib/pkgconfig:$PKG_CONFIG_PATH"
     export PKG_CONFIG_PATH="${CURRENTPATH}/../libdvdread/${OUTPUT}/lib/pkgconfig:$PKG_CONFIG_PATH"
 
-    export CFLAGS="${OPTIMIZE} ${msvc_arch_cflags} -fuse-ld=lld -fms-compatibility -I${CURRENTPATH}/../libdvdread/include"
+    dvdread_output="${CURRENTPATH}/../libdvdread/${OUTPUT}"
+    bash "${CURRENTPATH}/../libdvdread/check-layout.sh" "${dvdread_output}" || exit 1
+    export CFLAGS="${OPTIMIZE} ${msvc_arch_cflags} -fuse-ld=lld -fms-compatibility -I${dvdread_output}/include -I${CURRENTPATH}/../libdvdread/include"
     export CXXFLAGS="${CFLAGS} /EHsc -std:c++11"
     export LDFLAGS="${msvc_arch_ldflags}"
 
     pushd "${DEPENDSPATH}/libdvdnav"
 
+    # Header ABI and architecture changes require rebuilding every object.
+    if [ -f Makefile ]; then
+        make distclean || exit 1
+    fi
     autoreconf -i || exit
 
     export ac_cv_c_bigendian=no
@@ -123,6 +130,8 @@ do
         ${build_with_debug}                 \
 
     make V=1 -j $(nproc) 2>&1 | tee build.log && make install || exit
+    cp "${dvdread_output}/lib/dvdread-ifo-types.sha256" \
+        "${WSLPREFIX}/lib/dvdread-ifo-types.sha256" || exit 1
     mkdir -p "${CURRENTPATH}/${OUTPUT}"
     sed -i "s|^prefix=.*|prefix=${CURRENTPATH}/${OUTPUT}|" "${CURRENTPATH}/${OUTPUT}/lib/pkgconfig/"*.pc 2>/dev/null || true
 

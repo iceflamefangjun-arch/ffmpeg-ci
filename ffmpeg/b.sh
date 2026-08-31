@@ -375,12 +375,17 @@ do
     fi
 
     if pkg_module_ready "${dvdread_pc_dir}" "dvdread"; then
+        bash "${CURRENTPATH}/../libdvdread/check-layout.sh" \
+            "${CURRENTPATH}/../libdvdread/${OUTPUT}" || exit 1
         ffmpeg_libdvdread_flag="--enable-libdvdread"
     else
         echo "dvdread metadata missing or incomplete for ${ARCH}: disabling libdvdread."
     fi
 
     if pkg_module_ready "${dvdnav_pc_dir}" "dvdnav"; then
+        bash "${CURRENTPATH}/../libdvdread/check-layout.sh" \
+            "${CURRENTPATH}/../libdvdread/${OUTPUT}" \
+            "${CURRENTPATH}/../libdvdnav/${OUTPUT}" || exit 1
         ffmpeg_libdvdnav_flag="--enable-libdvdnav"
     else
         echo "dvdnav metadata missing or incomplete for ${ARCH}: disabling libdvdnav."

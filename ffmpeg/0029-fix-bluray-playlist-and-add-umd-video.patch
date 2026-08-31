@@ -9,7 +9,7 @@ index 6af8d43..06d4b5a 100644
 +OBJS-$(CONFIG_UMD_PROTOCOL)              += umd.o urldecode.o
  OBJS-$(CONFIG_UDPLITE_PROTOCOL)          += udp.o ip.o
  OBJS-$(CONFIG_UNIX_PROTOCOL)             += unix.o
- 
+
 diff --git a/libavformat/bluray.c b/libavformat/bluray.c
 index 0c44d7c..1a2f88c 100644
 --- a/libavformat/bluray.c
@@ -19,7 +19,7 @@ index 0c44d7c..1a2f88c 100644
      av_dict_set_int(&ic->metadata, "bluray_playlist_duration_us",
                      title_info->duration * 1000000 / 90000, 0);
 +    ic->duration = title_info->duration * AV_TIME_BASE / 90000;
- 
+
      for (int i = 0; i < ic->nb_streams; i++) {
          if (ic->streams[i] && ic->streams[i]->codecpar) {
 diff --git a/libavformat/demux.c b/libavformat/demux.c
@@ -35,176 +35,236 @@ index 9ce4525..59edb43 100644
 +            url_context->prot->url_parse_priv(ic, url_context);
      }
      return ret;
- 
+
 diff --git a/libavformat/mpeg.c b/libavformat/mpeg.c
-index 2c766a4..c6071c9 100644
 --- a/libavformat/mpeg.c
 +++ b/libavformat/mpeg.c
-@@ -21,7 +21,9 @@
- 
+@@ -21,7 +21,10 @@
+
  #include "config_components.h"
- 
+
 +#include "libavutil/avstring.h"
  #include "libavutil/channel_layout.h"
 +#include "libavutil/intreadwrite.h"
++#include "libavutil/mathematics.h"
  #include "libavutil/mem.h"
  #include "avformat.h"
  #include "avio_internal.h"
-@@ -129,6 +131,12 @@ typedef struct MpegDemuxContext {
+@@ -122,6 +125,15 @@
+     return score;
+ }
+
++typedef struct UmdAudioState {
++    uint8_t *data;
++    unsigned int allocated;
++    int size;
++    int64_t pts, dts;
++    int next_offset;
++    int64_t next_pts, next_dts;
++} UmdAudioState;
++
+ typedef struct MpegDemuxContext {
+     int32_t header_state;
+     unsigned char psm_es_type[256];
+@@ -129,6 +141,8 @@
      int dvd;
      int imkh_cctv;
      int raw_ac3;
 +    int umd;
-+    uint8_t *umd_audio;
-+    int umd_audio_size;
-+    int umd_audio_allocated;
-+    int64_t umd_audio_pts;
-+    int64_t umd_audio_dts;
++    int64_t umd_read_pos;
  } MpegDemuxContext;
- 
+
  static int mpegps_read_header(AVFormatContext *s)
-@@ -138,6 +146,9 @@ static int mpegps_read_header(AVFormatContext *s)
+@@ -138,6 +152,8 @@
      int64_t last_pos = avio_tell(s->pb);
- 
+
      m->header_state = 0xff;
 +    m->umd = av_strstart(s->url, "umd://", NULL);
-+    m->umd_audio_pts = AV_NOPTS_VALUE;
-+    m->umd_audio_dts = AV_NOPTS_VALUE;
++    m->umd_read_pos = -1;
      s->ctx_flags   |= AVFMTCTX_NOHEADER;
- 
+
      avio_get_str(s->pb, 6, buffer, sizeof(buffer));
-@@ -480,6 +491,88 @@ redo:
+@@ -480,6 +496,112 @@
      return len;
  }
- 
-+static int umd_audio_packet(AVFormatContext *s, AVPacket *pkt)
+
++static void umd_audio_reset(UmdAudioState *audio)
 +{
-+    MpegDemuxContext *m = s->priv_data;
-+    AVStream *st = NULL;
-+    int frame_size;
-+    int payload_size;
-+    int ret;
-+
-+    if (m->umd_audio_size < 8)
-+        return AVERROR(EAGAIN);
-+    if (m->umd_audio[0] != 0x0f || m->umd_audio[1] != 0xd0) {
-+        int offset;
-+        for (offset = 1; offset + 1 < m->umd_audio_size; offset++) {
-+            if (m->umd_audio[offset] == 0x0f &&
-+                m->umd_audio[offset + 1] == 0xd0)
-+                break;
-+        }
-+        av_log(s, AV_LOG_DEBUG,
-+               "Resynchronizing UMD ATRAC3+ stream after %d bytes\n", offset);
-+        memmove(m->umd_audio, m->umd_audio + offset,
-+                m->umd_audio_size - offset);
-+        m->umd_audio_size -= offset;
-+        return AVERROR(EAGAIN);
-+    }
-+
-+    frame_size = ((AV_RB16(m->umd_audio + 2) & 0x3ff) << 3) + 8;
-+    if (frame_size <= 8 || frame_size > m->umd_audio_size)
-+        return AVERROR(EAGAIN);
-+
-+    for (unsigned i = 0; i < s->nb_streams; i++) {
-+        if (s->streams[i]->id == 0x08) {
-+            st = s->streams[i];
-+            break;
-+        }
-+    }
-+    if (!st)
-+        return AVERROR_STREAM_NOT_FOUND;
-+
-+    payload_size = frame_size - 8;
-+    ret = av_new_packet(pkt, payload_size);
-+    if (ret < 0)
-+        return ret;
-+    memcpy(pkt->data, m->umd_audio + 8, payload_size);
-+    memmove(m->umd_audio, m->umd_audio + frame_size,
-+            m->umd_audio_size - frame_size);
-+    m->umd_audio_size -= frame_size;
-+
-+    st->codecpar->block_align = payload_size;
-+    pkt->pts = m->umd_audio_pts;
-+    pkt->dts = m->umd_audio_dts;
-+    pkt->stream_index = st->index;
-+    m->umd_audio_pts = AV_NOPTS_VALUE;
-+    m->umd_audio_dts = AV_NOPTS_VALUE;
-+    return 0;
++    audio->size = 0;
++    audio->pts = audio->dts = AV_NOPTS_VALUE;
++    audio->next_offset = -1;
++    audio->next_pts = audio->next_dts = AV_NOPTS_VALUE;
 +}
 +
-+static int umd_append_audio(AVFormatContext *s, int len,
-+                            int64_t pts, int64_t dts)
++static void umd_audio_consume(UmdAudioState *audio, int size)
 +{
-+    MpegDemuxContext *m = s->priv_data;
-+    int needed = m->umd_audio_size + len;
++    memmove(audio->data, audio->data + size, audio->size - size);
++    audio->size -= size;
++    if (audio->next_offset >= 0)
++        audio->next_offset = FFMAX(0, audio->next_offset - size);
++}
++
++static int umd_audio_packet(AVStream *st, AVPacket *pkt)
++{
++    UmdAudioState *audio = st->priv_data;
++    const AVRational sample_time_base = { 1, 44100 };
++    int frame_size, ret;
++
++    while (audio->size >= 8) {
++        if (audio->data[0] != 0x0f || audio->data[1] != 0xd0) {
++            int offset;
++            for (offset = 1; offset + 1 < audio->size; offset++) {
++                if (audio->data[offset] == 0x0f && audio->data[offset + 1] == 0xd0)
++                    break;
++            }
++            /* Keep the final byte: the sync word can cross PES packets. */
++            umd_audio_consume(audio, offset);
++            audio->pts = audio->dts = AV_NOPTS_VALUE;
++            continue;
++        }
++        frame_size = ((AV_RB16(audio->data + 2) & 0x3ff) << 3) + 8;
++        if (frame_size == 8) {
++            umd_audio_consume(audio, 2);
++            continue;
++        }
++        if (frame_size > audio->size)
++            break;
++        ret = av_new_packet(pkt, frame_size - 8);
++        if (ret < 0)
++            return ret;
++        if (audio->next_offset == 0) {
++            audio->pts = audio->next_pts;
++            audio->dts = audio->next_dts;
++            audio->next_offset = -1;
++        }
++        memcpy(pkt->data, audio->data + 8, pkt->size);
++        pkt->pts = audio->pts;
++        pkt->dts = audio->dts;
++        pkt->duration = av_rescale_q(2048, sample_time_base, st->time_base);
++        pkt->stream_index = st->index;
++        st->codecpar->block_align = pkt->size;
++        umd_audio_consume(audio, frame_size);
++        if (audio->pts != AV_NOPTS_VALUE)
++            audio->pts = av_add_stable(st->time_base, audio->pts, sample_time_base, 2048);
++        if (audio->dts != AV_NOPTS_VALUE)
++            audio->dts = av_add_stable(st->time_base, audio->dts, sample_time_base, 2048);
++        return 0;
++    }
++    return AVERROR(EAGAIN);
++}
++
++static int umd_append_audio(AVFormatContext *s, AVStream *st, int len,
++                            int first_frame_offset, int64_t pts, int64_t dts)
++{
++    UmdAudioState *audio = st->priv_data;
++    uint8_t *data;
 +    int ret;
 +
-+    if (needed > m->umd_audio_allocated) {
-+        int allocated = FFMAX(needed, m->umd_audio_allocated * 2);
-+        uint8_t *buffer = av_realloc(m->umd_audio, allocated);
-+        if (!buffer)
-+            return AVERROR(ENOMEM);
-+        m->umd_audio = buffer;
-+        m->umd_audio_allocated = allocated;
++    if (len > INT_MAX - audio->size)
++        return AVERROR_INVALIDDATA;
++    data = av_fast_realloc(audio->data, &audio->allocated, audio->size + len);
++    if (!data)
++        return AVERROR(ENOMEM);
++    audio->data = data;
++    /* Preserve a timestamp belonging to a frame split across PES packets. */
++    if (audio->next_offset == 0) {
++        audio->pts = audio->next_pts;
++        audio->dts = audio->next_dts;
++        audio->next_offset = -1;
 +    }
-+    if (!m->umd_audio_size) {
-+        m->umd_audio_pts = pts;
-+        m->umd_audio_dts = dts;
++    /* PES timestamps describe the first new frame, not a preceding fragment. */
++    if (first_frame_offset < len && (pts != AV_NOPTS_VALUE || dts != AV_NOPTS_VALUE)) {
++        audio->next_offset = audio->size + first_frame_offset;
++        audio->next_pts = pts;
++        audio->next_dts = dts;
 +    }
-+    ret = avio_read(s->pb, m->umd_audio + m->umd_audio_size, len);
++    ret = avio_read(s->pb, audio->data + audio->size, len);
 +    if (ret < 0)
 +        return ret;
-+    m->umd_audio_size += ret;
++    audio->size += ret;
 +    return ret == len ? 0 : AVERROR_EOF;
++}
++
++static void umd_audio_reset_all(AVFormatContext *s)
++{
++    for (unsigned i = 0; i < s->nb_streams; i++) {
++        AVStream *st = s->streams[i];
++        if (st->codecpar->codec_id == AV_CODEC_ID_ATRAC3P && st->priv_data)
++            umd_audio_reset(st->priv_data);
++    }
 +}
 +
  static int mpegps_read_packet(AVFormatContext *s,
                                AVPacket *pkt)
  {
-@@ -493,6 +586,9 @@ static int mpegps_read_packet(AVFormatContext *s,
+@@ -492,6 +614,24 @@
+     enum AVCodecID codec_id = AV_CODEC_ID_NONE;
      enum AVMediaType type;
      int64_t pts, dts, dummy_pos; // dummy_pos is needed for the index building to work
- 
-+    if (m->umd && umd_audio_packet(s, pkt) == 0)
-+        return 0;
 +
++    if (m->umd) {
++        /* Also handle byte seeks / external AVIO repositioning. */
++        if (m->umd_read_pos >= 0 && avio_tell(s->pb) != m->umd_read_pos)
++            umd_audio_reset_all(s);
++        for (unsigned j = 0; j < s->nb_streams; j++) {
++            AVStream *audio_st = s->streams[j];
++            if (audio_st->codecpar->codec_id != AV_CODEC_ID_ATRAC3P || !audio_st->priv_data)
++                continue;
++            if (audio_st->discard >= AVDISCARD_ALL) {
++                umd_audio_reset(audio_st->priv_data);
++                continue;
++            }
++            ret = umd_audio_packet(audio_st, pkt);
++            if (ret != AVERROR(EAGAIN))
++                return ret;
++        }
++    }
+
  redo:
      len = mpegps_read_pes_header(s, &dummy_pos, &startcode, &pts, &dts);
-     if (len < 0)
-@@ -614,6 +710,9 @@ redo:
+@@ -614,6 +754,9 @@
          /* Used for both AC-3 and E-AC-3 in EVOB files */
          type     = AVMEDIA_TYPE_AUDIO;
          codec_id = AV_CODEC_ID_AC3;
-+    } else if (m->umd && startcode == 0x08) {
++    } else if (m->umd && startcode >= 0x00 && startcode <= 0x0f) {
 +        type = AVMEDIA_TYPE_AUDIO;
 +        codec_id = AV_CODEC_ID_ATRAC3P;
      } else if (startcode >= 0x20 && startcode <= 0x3f) {
          type     = AVMEDIA_TYPE_SUBTITLE;
          codec_id = AV_CODEC_ID_DVD_SUBTITLE;
-@@ -638,6 +737,9 @@ skip:
+@@ -638,13 +781,40 @@
          || st->codecpar->codec_id == AV_CODEC_ID_PCM_ALAW) {
          st->codecpar->ch_layout = (AVChannelLayout)AV_CHANNEL_LAYOUT_MONO;
          st->codecpar->sample_rate = 8000;
 +    } else if (m->umd && st->codecpar->codec_id == AV_CODEC_ID_ATRAC3P) {
 +        st->codecpar->ch_layout = (AVChannelLayout)AV_CHANNEL_LAYOUT_STEREO;
 +        st->codecpar->sample_rate = 44100;
++        st->priv_data = av_mallocz(sizeof(UmdAudioState));
++        if (!st->priv_data)
++            return AVERROR(ENOMEM);
++        umd_audio_reset(st->priv_data);
++        avpriv_set_pts_info(st, 33, 1, 90000);
      }
      sti->request_probe = request_probe;
-     sti->need_parsing  = AVSTREAM_PARSE_FULL;
-@@ -645,6 +747,21 @@ skip:
+-    sti->need_parsing  = AVSTREAM_PARSE_FULL;
++    sti->need_parsing = (m->umd && codec_id == AV_CODEC_ID_ATRAC3P)
++                       ? AVSTREAM_PARSE_NONE : AVSTREAM_PARSE_FULL;
+
  found:
      if (st->discard >= AVDISCARD_ALL)
          goto skip;
-+    if (m->umd && startcode == 0x08) {
++    if (m->umd && startcode >= 0x00 && startcode <= 0x0f) {
++        int first_frame_offset;
 +        if (len <= 3)
 +            goto skip;
-+        avio_skip(s->pb, 3);
++        avio_r8(s->pb);
++        first_frame_offset = avio_rb16(s->pb);
 +        len -= 3;
-+        ret = umd_append_audio(s, len, pts, dts);
++        ret = umd_append_audio(s, st, len, first_frame_offset, pts, dts);
++        m->umd_read_pos = avio_tell(s->pb);
 +        if (ret < 0)
 +            return ret;
-+        ret = umd_audio_packet(s, pkt);
++        ret = umd_audio_packet(st, pkt);
 +        if (ret == 0)
 +            return 0;
 +        if (ret != AVERROR(EAGAIN))
@@ -214,15 +274,29 @@ index 2c766a4..c6071c9 100644
      if (startcode >= 0xa0 && startcode <= 0xaf) {
        if (st->codecpar->codec_id == AV_CODEC_ID_MLP) {
              if (len < 6)
-@@ -668,6 +785,25 @@ found:
+@@ -665,7 +835,38 @@
+             pkt->stream_index, pkt->pts / 90000.0, pkt->dts / 90000.0,
+             pkt->size);
+
++    if (m->umd)
++        m->umd_read_pos = avio_tell(s->pb);
      return (ret < 0) ? ret : 0;
- }
- 
++}
++
 +static int mpegps_read_close(AVFormatContext *s)
 +{
 +    MpegDemuxContext *m = s->priv_data;
 +
-+    av_freep(&m->umd_audio);
++    if (m->umd) {
++        for (unsigned i = 0; i < s->nb_streams; i++) {
++            AVStream *st = s->streams[i];
++            if (st->codecpar->codec_id == AV_CODEC_ID_ATRAC3P && st->priv_data) {
++                UmdAudioState *audio = st->priv_data;
++                av_freep(&audio->data);
++                av_freep(&st->priv_data);
++            }
++        }
++    }
 +    return 0;
 +}
 +
@@ -231,23 +305,22 @@ index 2c766a4..c6071c9 100644
 +{
 +    MpegDemuxContext *m = s->priv_data;
 +
-+    m->umd_audio_size = 0;
-+    m->umd_audio_pts = AV_NOPTS_VALUE;
-+    m->umd_audio_dts = AV_NOPTS_VALUE;
++    if (m->umd) {
++        umd_audio_reset_all(s);
++        m->umd_read_pos = -1;
++    }
 +    return ff_seek_frame_binary(s, stream_index, timestamp, flags);
-+}
-+
+ }
+
  static int64_t mpegps_read_dts(AVFormatContext *s, int stream_index,
-                                int64_t *ppos, int64_t pos_limit)
- {
-@@ -707,6 +843,8 @@ const FFInputFormat ff_mpegps_demuxer = {
+@@ -707,6 +908,8 @@
      .read_header    = mpegps_read_header,
      .read_packet    = mpegps_read_packet,
      .read_timestamp = mpegps_read_dts,
 +    .read_seek      = mpegps_read_seek,
 +    .read_close     = mpegps_read_close,
  };
- 
+
  #if CONFIG_VOBSUB_DEMUXER
 diff --git a/libavformat/protocols.c b/libavformat/protocols.c
 index 1a8c084..be55c8f 100644

@@ -1,5 +1,6 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
 cd "${SCRIPT_DIR}" || exit 1
+set -o pipefail
 source "${SCRIPT_DIR}/../env_config.sh"
 
 CURRENTPATH="${SCRIPT_DIR}"
@@ -57,9 +58,8 @@ popd
 
 patch --batch -N -d ${DEPENDSPATH}/libdvdread -p1 <${CURRENTPATH}/ssize_t.patch || exit
 patch --batch -N -d ${DEPENDSPATH}/libdvdread -p1 <${CURRENTPATH}/unistd.patch || exit
-# MSVC/clang-cl allocates unsigned int bitfields in 4-byte units, inflating
-# playback_type_t from 1 to 4 bytes and title_info_t from 12 to 15 bytes,
-# which makes ifoRead_TT_SRPT truncate nr_of_srpts (info_length/sizeof = 0).
+# Keep serialized IFO records byte-sized under MSVC/clang-cl. The installed
+# header checks sizes/offsets in every consumer (dvdread, dvdnav and FFmpeg).
 patch --batch -N -d ${DEPENDSPATH}/libdvdread -p1 <${CURRENTPATH}/msvc-bitfield-sizeof.patch || exit
 
 ############################################################################################
@@ -138,6 +138,8 @@ do
     sed -i "s|^prefix=.*|prefix=${CURRENTPATH}/${OUTPUT}|" "${CURRENTPATH}/${OUTPUT}/lib/pkgconfig/"*.pc 2>/dev/null || true
 
     cp ${CURRENTPATH}/build/config.h ${CURRENTPATH}/${OUTPUT}/include || exit
+    sha256sum "${CURRENTPATH}/${OUTPUT}/include/dvdread/ifo_types.h" | cut -d ' ' -f 1 > \
+        "${CURRENTPATH}/${OUTPUT}/lib/dvdread-ifo-types.sha256" || exit 1
 
     popd
 done

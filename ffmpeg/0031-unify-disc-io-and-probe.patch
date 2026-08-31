@@ -20,7 +20,9 @@ new file mode 100644
 index 0000000..28120c6
 --- /dev/null
 +++ b/libavformat/disc_io.c
-@@ -0,0 +1,425 @@
+@@ -0,0 +1,427 @@
++#include "config_components.h"
++
 +#include "disc_io.h"
 +
 +#include "libavutil/avstring.h"
