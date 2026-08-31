@@ -49,6 +49,9 @@ jobs:
       FDK_AAC_REPO_URL: ${{ vars.FDK_AAC_REPO_URL }}
       X264_REPO_URL: ${{ vars.X264_REPO_URL }}
       MIRROR_REPO_TOKEN: ${{ secrets.MIRROR_REPO_TOKEN }}
+      # Buffer each make target's output in a file before forwarding it to tee.
+      # Native clang-cl can report ENOSPC when an MSYS2 pipe buffer fills up.
+      MAKEFLAGS: --output-sync=target
 
     steps:
       - name: Checkout
@@ -222,6 +225,9 @@ jobs:
           workspace="$(cygpath -u "$GITHUB_WORKSPACE")"
           deps="$(cygpath -u "$RUNNER_TEMP")/ffmpeg-src"
           found=0
+          echo "::group::Disk space at failure"
+          df -h
+          echo "::endgroup::"
           build_dirs=(
             "$workspace/ffmpeg/build"
             "$deps/ffmpeg/build"
