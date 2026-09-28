@@ -1,0 +1,16 @@
+--- a/libavformat/http.c
++++ b/libavformat/http.c
+@@ -227,9 +227,11 @@ static int http_open_cnx_internal(URLContext *h, AVDictionary **options)
+     env_http_proxy = getenv_utf8("http_proxy");
+     proxy_path = s->http_proxy ? s->http_proxy : env_http_proxy;
+ 
+     env_no_proxy = getenv_utf8("no_proxy");
+-    use_proxy  = !ff_http_match_no_proxy(env_no_proxy, hostname) &&
+-                 proxy_path && av_strstart(proxy_path, "http://", NULL);
++    /* An explicit http_proxy option is the caller's decision. no_proxy still
++     * applies when the proxy comes only from the environment. */
++    use_proxy = proxy_path && av_strstart(proxy_path, "http://", NULL) &&
++                (s->http_proxy || !ff_http_match_no_proxy(env_no_proxy, hostname));
+     freeenv_utf8(env_no_proxy);
+ 
+     if (!strcmp(proto, "https")) {

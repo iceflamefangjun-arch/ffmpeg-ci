@@ -180,6 +180,8 @@ echo "Applying patch 0031-unify-disc-io-and-probe.patch..."
 patch -d "${FFMPEG_SRC_DIR}" -p1 <${CURRENTPATH}/0031-unify-disc-io-and-probe.patch || exit
 echo "Applying patch 0032-dvdvideo-stream-bridge.patch..."
 patch -d "${FFMPEG_SRC_DIR}" -p1 <${CURRENTPATH}/0032-dvdvideo-stream-bridge.patch || exit
+echo "Applying patch 0033-http-explicit-proxy-ignores-no-proxy.patch..."
+patch -d "${FFMPEG_SRC_DIR}" -p1 <${CURRENTPATH}/0033-http-explicit-proxy-ignores-no-proxy.patch || exit
 
 # clang-cl is detected by FFmpeg's configure script as an MSVC-compatible
 # compiler rather than as clang.  Therefore, its upstream clang-only ThinLTO

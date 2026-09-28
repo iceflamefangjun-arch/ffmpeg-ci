@@ -170,6 +170,7 @@ FFMPEG_PATCHES=(
 #    0025-drm-plugin.patch
     0026-clean-avio-error-when-meet-eof-or-read-data.patch
     0027-mov-auxiliary_info_sample_count-is-not-required.patch
+    0033-http-explicit-proxy-ignores-no-proxy.patch
 )
 
 LIVE_DECODERS=(aac aac_latm ac3 av1 eac3 flac h264 hevc mjpeg mp2 mp2float mp3 mp3float mpeg2video opus pcm_alaw pcm_mulaw pcm_s16le vorbis vp8 vp9)

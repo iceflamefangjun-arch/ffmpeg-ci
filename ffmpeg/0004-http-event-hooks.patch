@@ -4,10 +4,10 @@ Date: Wed, 28 May 2025 18:01:07 +0800
 Subject: [PATCH] restore ijk http event hooks
 
 ---
- libavformat/http.c | 32 +++++++++++++++++++++++--
+ libavformat/http.c | 30 +++++++++++++++++++++++++++++-
  libavformat/tcp.c  | 60 ++++++++++++++++++++++++++++++++++++++++++----
  libavutil/error.h  |  4 ++++
- 3 files changed, 89 insertions(+), 7 deletions(-)
+ 3 files changed, 88 insertions(+), 6 deletions(-)
 
 diff --git a/libavformat/http.c b/libavformat/http.c
 index ec60bc0..1228735 100644
@@ -122,15 +122,6 @@ index ec60bc0..1228735 100644
      if( s->seekable == 1 )
          h->is_streamed = 0;
      else
-@@ -2125,7 +2153,7 @@ static int http_proxy_open(URLContext *h, const char *uri, int flags)
-     if (*path == '/')
-         path++;
- 
--    ff_url_join(lower_url, sizeof(lower_url), "tcp", NULL, hostname, port,
-+    ff_url_join(lower_url, sizeof(lower_url), s->tcp_hook, NULL, hostname, port,
-                 NULL);
- redo:
-     ret = ffurl_open_whitelist(&s->hd, lower_url, AVIO_FLAG_READ_WRITE,
 diff --git a/libavformat/tcp.c b/libavformat/tcp.c
 index 755e3af..da8a350 100644
 --- a/libavformat/tcp.c
