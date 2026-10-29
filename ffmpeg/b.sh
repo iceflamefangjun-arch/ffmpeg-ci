@@ -115,9 +115,9 @@ else
 fi
 ############################################################################################
 
-trap "cd \"${FFMPEG_SRC_DIR}\" && git reset --hard && rm -f libavcodec/{av3a.h,av3a_parser.c} libavformat/{application.c,application.h,av3adec.c,bluray_custom_fs.c,bluray_custom_fs.h,dns_cache.c,dns_cache.h,drm_plugin.c,ijkutils.c,libsmb2.c,lrucache.c,lrucache.h,umd.c,dvd.c,bluray_util.h,disc_io.c,disc_io.h,dvdvideo_stream_io.c} libavutil/{application.h,application.c}" EXIT
+trap "cd \"${FFMPEG_SRC_DIR}\" && git reset --hard && rm -f libavcodec/{av3a.h,av3a_parser.c} libavformat/{application.c,application.h,av3adec.c,bluray_custom_fs.c,bluray_custom_fs.h,dns_cache.c,dns_cache.h,drm_plugin.c,ijkutils.c,libsmb2.c,lrucache.c,lrucache.h,umd.c,dvd.c,bluray_util.h,disc_io.c,disc_io.h,dvdvideo_stream_io.c,dvdisodec.c} libavutil/{application.h,application.c}" EXIT
 pushd "${FFMPEG_SRC_DIR}"
-git reset --hard && rm -f libavcodec/{av3a.h,av3a_parser.c} libavformat/{application.c,application.h,av3adec.c,bluray_custom_fs.c,bluray_custom_fs.h,dns_cache.c,dns_cache.h,drm_plugin.c,ijkutils.c,libsmb2.c,lrucache.c,lrucache.h,umd.c,dvd.c,bluray_util.h,disc_io.c,disc_io.h,dvdvideo_stream_io.c}
+git reset --hard && rm -f libavcodec/{av3a.h,av3a_parser.c} libavformat/{application.c,application.h,av3adec.c,bluray_custom_fs.c,bluray_custom_fs.h,dns_cache.c,dns_cache.h,drm_plugin.c,ijkutils.c,libsmb2.c,lrucache.c,lrucache.h,umd.c,dvd.c,bluray_util.h,disc_io.c,disc_io.h,dvdvideo_stream_io.c,dvdisodec.c}
 sed -i '/test "\$cc_type" != "\$ld_type" && die "LTO requires same compiler and linker"/d' configure
 popd
 
@@ -178,8 +178,8 @@ echo "Applying patch 0030-cancellable-smb2-io.patch..."
 patch -d "${FFMPEG_SRC_DIR}" -p1 <${CURRENTPATH}/0030-cancellable-smb2-io.patch || exit
 echo "Applying patch 0031-unify-disc-io-and-probe.patch..."
 patch -d "${FFMPEG_SRC_DIR}" -p1 <${CURRENTPATH}/0031-unify-disc-io-and-probe.patch || exit
-echo "Applying patch 0032-dvdvideo-stream-bridge.patch..."
-patch -d "${FFMPEG_SRC_DIR}" -p1 <${CURRENTPATH}/0032-dvdvideo-stream-bridge.patch || exit
+echo "Applying patch 0032-dvdvideo-iso-demuxer.patch..."
+patch -d "${FFMPEG_SRC_DIR}" -p1 <${CURRENTPATH}/0032-dvdvideo-iso-demuxer.patch || exit
 echo "Applying patch 0033-http-explicit-proxy-ignores-no-proxy.patch..."
 patch -d "${FFMPEG_SRC_DIR}" -p1 <${CURRENTPATH}/0033-http-explicit-proxy-ignores-no-proxy.patch || exit
 
@@ -294,8 +294,7 @@ do
     ffmpeg_libsmb2_protocol_flag="--disable-protocol=libsmb2"
     ffmpeg_openssl_flag="--disable-openssl"
     ffmpeg_libbluray_flag="--disable-libbluray"
-    ffmpeg_libdvdnav_flag="--disable-libdvdnav"
-    ffmpeg_libdvdread_flag="--disable-libdvdread"
+    ffmpeg_libudfread_flag="--disable-libudfread"
     ffmpeg_libsmb2_flag="--disable-libsmb2"
     ffmpeg_libxml2_flag="--disable-libxml2"
     ffmpeg_zlib_flag="--disable-zlib"
@@ -308,8 +307,6 @@ do
     beenet_lib_dir="${CURRENTPATH}/../BeeNet/lib/${BUILD}/${beenet_arch}"
     libbluray_pc_dir="${CURRENTPATH}/../libbluray/${OUTPUT}/lib/pkgconfig"
     libudfread_pc_dir="${CURRENTPATH}/../libudfread/${OUTPUT}/lib/pkgconfig"
-    dvdread_pc_dir="${CURRENTPATH}/../libdvdread/${OUTPUT}/lib/pkgconfig"
-    dvdnav_pc_dir="${CURRENTPATH}/../libdvdnav/${OUTPUT}/lib/pkgconfig"
     libsmb2_pc_dir="${CURRENTPATH}/../libsmb2/${OUTPUT}/lib/pkgconfig"
     libxml2_pc_dir="${CURRENTPATH}/../libxml2/${OUTPUT}/lib/pkgconfig"
     zlib_pc_dir="${CURRENTPATH}/../zlib/${OUTPUT}/lib/pkgconfig"
@@ -350,8 +347,6 @@ do
     export PKG_CONFIG_LIBDIR=
     append_pkg_config_dir "${libbluray_pc_dir}"
     append_pkg_config_dir "${libudfread_pc_dir}"
-    append_pkg_config_dir "${dvdread_pc_dir}"
-    append_pkg_config_dir "${dvdnav_pc_dir}"
     append_pkg_config_dir "${libsmb2_pc_dir}"
     append_pkg_config_dir "${libxml2_pc_dir}"
     append_pkg_config_dir "${zlib_pc_dir}"
@@ -376,21 +371,10 @@ do
         echo "libbluray metadata missing or incomplete for ${ARCH}: disabling bluray support."
     fi
 
-    if pkg_module_ready "${dvdread_pc_dir}" "dvdread"; then
-        bash "${CURRENTPATH}/../libdvdread/check-layout.sh" \
-            "${CURRENTPATH}/../libdvdread/${OUTPUT}" || exit 1
-        ffmpeg_libdvdread_flag="--enable-libdvdread"
+    if pkg_module_ready "${libudfread_pc_dir}" "libudfread"; then
+        ffmpeg_libudfread_flag="--enable-libudfread"
     else
-        echo "dvdread metadata missing or incomplete for ${ARCH}: disabling libdvdread."
-    fi
-
-    if pkg_module_ready "${dvdnav_pc_dir}" "dvdnav"; then
-        bash "${CURRENTPATH}/../libdvdread/check-layout.sh" \
-            "${CURRENTPATH}/../libdvdread/${OUTPUT}" \
-            "${CURRENTPATH}/../libdvdnav/${OUTPUT}" || exit 1
-        ffmpeg_libdvdnav_flag="--enable-libdvdnav"
-    else
-        echo "dvdnav metadata missing or incomplete for ${ARCH}: disabling libdvdnav."
+        echo "libudfread metadata missing or incomplete for ${ARCH}: disabling dvdvideo support."
     fi
 
     if pkg_module_ready "${libsmb2_pc_dir}" "libsmb2"; then
@@ -411,8 +395,6 @@ do
     
  #   export LDFLAGS="${LDFLAGS} /libpath:${CURRENTPATH}/../libbluray/${OUTPUT}/lib"
  #   export LDFLAGS="${LDFLAGS} /libpath:${CURRENTPATH}/../libudfread/output/static/${archs[i]}/lib"
- #   export LDFLAGS="${LDFLAGS} /libpath:${CURRENTPATH}/../libdvdnav/${OUTPUT}/lib"
- #   export LDFLAGS="${LDFLAGS} /libpath:${CURRENTPATH}/../libdvdread/${OUTPUT}/lib"
 
     zlib_pc_file="${zlib_pc_dir}/zlib.pc"
     if [ -f "${zlib_pc_file}" ]; then
@@ -486,8 +468,6 @@ do
         ${ffmpeg_x86asm_flag}              \
         --disable-static                    \
         --enable-shared                     \
-        --enable-gpl                        \
-        --enable-nonfree                    \
         --enable-runtime-cpudetect          \
         --disable-programs                  \
         --enable-ffmpeg                     \
@@ -555,10 +535,9 @@ do
         ${ffmpeg_openssl_flag}              \
         ${ffmpeg_zlib_flag}                 \
         ${ffmpeg_libbluray_flag}            \
+        ${ffmpeg_libudfread_flag}           \
         ${ffmpeg_libsmb2_flag}              \
         ${ffmpeg_libxml2_flag}              \
-        ${ffmpeg_libdvdnav_flag}            \
-        ${ffmpeg_libdvdread_flag}           \
         --disable-nvenc                     \
         --disable-cuda                      \
         --extra-libs="${LIBS}"              \

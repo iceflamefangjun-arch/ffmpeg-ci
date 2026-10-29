@@ -52,8 +52,6 @@ for file in \
     json-c/b.sh \
     pthread-win32/b.sh \
     libudfread/b.sh \
-    libdvdread/b.sh \
-    libdvdnav/b.sh \
     libbluray/b.sh \
     zlib/b.sh \
     libxml2/b.sh \
@@ -68,15 +66,13 @@ assert_contains ffmpeg/b.sh 'beenet_arch="aarch64"'
 assert_contains ffmpeg/b.sh 'ASFLAGS="\$\{CFLAGS\}"'
 assert_contains ffmpeg/b.sh 'ffmpeg_as_args=\(--as="\$\{CC\}"\)'
 assert_contains pthread-win32/b.sh 'set\(TARGET_ARCH "ARM64"\)'
-assert_contains libdvdread/include/stdint.h 'defined\(__clang__\) && defined\(_M_ARM64\)'
-assert_contains libdvdread/include/stdint.h '#include_next <stdint.h>'
 assert_contains zlib/b.sh "ADLER32_SIMD_NEON"
 
 standard_shadow_headers="$({
     git -C "${ROOT_DIR}" ls-files |
         grep -E '(^|/)include/(stdint|inttypes|wchar|limits|stddef)\.h$' || true
 } | sort)"
-if [ "${standard_shadow_headers}" != "libdvdread/include/stdint.h" ]; then
+if [ -n "${standard_shadow_headers}" ]; then
     echo "Unexpected standard headers may shadow clang-cl/Windows SDK headers:" >&2
     printf '%s\n' "${standard_shadow_headers}" >&2
     exit 1
@@ -89,8 +85,6 @@ for script in \
     json-c/b.sh \
     pthread-win32/b.sh \
     libudfread/b.sh \
-    libdvdread/b.sh \
-    libdvdnav/b.sh \
     libbluray/b.sh \
     zlib/b.sh \
     libxml2/b.sh \

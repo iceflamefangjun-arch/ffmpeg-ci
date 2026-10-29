@@ -3,8 +3,44 @@ From: shplayer <shplayer@local>
 Date: Fri, 28 Aug 2026 00:00:00 +0800
 Subject: [PATCH] unify disc io and probe
 
+diff --git a/configure b/configure
+--- a/configure
++++ b/configure
+@@ -288,6 +288,7 @@
+   --enable-libtorch        enable Torch as one DNN backend [no]
+   --enable-libtwolame      enable MP2 encoding via libtwolame [no]
+   --enable-libuavs3d       enable AVS3 decoding via libuavs3d [no]
++  --enable-libudfread      enable UDF reading using libudfread [no]
+   --enable-libv4l2         enable libv4l2/v4l-utils [no]
+   --enable-libvidstab      enable video stabilization using vid.stab [no]
+   --enable-libvmaf         enable vmaf filter via libvmaf [no]
+@@ -1967,6 +1968,7 @@
+     libtorch
+     libtwolame
+     libuavs3d
++    libudfread
+     libv4l2
+     libvmaf
+     libvorbis
+@@ -3623,7 +3625,7 @@
+ dv_demuxer_select="dvprofile"
+ dv_muxer_select="dvprofile"
+ dvdvideo_demuxer_select="mpegps_demuxer"
+-dvdvideo_demuxer_deps="libdvdnav libdvdread"
++dvdvideo_demuxer_deps="libdvdnav libdvdread libudfread"
+ dxa_demuxer_select="riffdec"
+ eac3_demuxer_select="ac3_parser"
+ evc_demuxer_select="evc_frame_merge_bsf evc_parser"
+@@ -7011,6 +7013,7 @@
+                              { check_lib libtwolame twolame.h twolame_encode_buffer_float32_interleaved -ltwolame ||
+                                die "ERROR: libtwolame must be installed and version must be >= 0.3.10"; }
+ enabled libuavs3d         && require_pkg_config libuavs3d "uavs3d >= 1.1.41" uavs3d.h uavs3d_decode
++enabled libudfread        && require_pkg_config libudfread "libudfread >= 1.1.2" udfread/udfread.h udfread_open_input
+ enabled libv4l2           && require_pkg_config libv4l2 libv4l2 libv4l2.h v4l2_ioctl
+ enabled libvidstab        && require_pkg_config libvidstab "vidstab >= 0.98" vid.stab/libvidstab.h vsMotionDetectInit
+ enabled libvmaf           && require_pkg_config libvmaf "libvmaf >= 2.0.0" libvmaf.h vmaf_init
 diff --git a/libavformat/Makefile b/libavformat/Makefile
-index 1111111..2222222 100644
+index 06d4b5a..6a68962 100644
 --- a/libavformat/Makefile
 +++ b/libavformat/Makefile
 @@ -21,6 +21,7 @@ OBJS = allformats.o         \
@@ -17,17 +53,16 @@ index 1111111..2222222 100644
         dump.o               \
 diff --git a/libavformat/disc_io.c b/libavformat/disc_io.c
 new file mode 100644
-index 0000000..28120c6
 --- /dev/null
 +++ b/libavformat/disc_io.c
-@@ -0,0 +1,588 @@
+@@ -0,0 +1,645 @@
 +#include "config_components.h"
 +
 +#include "disc_io.h"
 +
 +#include "libavutil/avstring.h"
-+#include "libavutil/bprint.h"
 +#include "libavutil/error.h"
++#include "libavutil/intreadwrite.h"
 +#include "libavutil/mem.h"
 +#include "libavutil/time.h"
 +#include "libavformat/avio.h"
@@ -42,24 +77,30 @@ index 0000000..28120c6
 +#include <libbluray/bluray.h>
 +#endif
 +#if CONFIG_DVDVIDEO_DEMUXER
-+#include <dvdread/dvd_reader.h>
-+#include <dvdread/ifo_read.h>
++#include <udfread/udfread.h>
++#include <udfread/blockinput.h>
 +#endif
 +
 +#define ISO_SECTOR_SIZE 2048
 +
 +struct DiscIO {
 +    AVIOContext *pb;
++    int owns_pb;
 +    AVIOInterruptCB interrupt_cb;
 +    int64_t startup_deadline_us;
 +    int64_t last_io_us;
 +    int64_t size;
 +    void *probe_id;
-+    const char *probe_url; /* Borrowed only for the duration of av_disc_probe(). */
 +    const char *stage;
 +    int first_io_error;
 +    int64_t read_calls;
 +    int64_t bytes_read;
++#if CONFIG_DVDVIDEO_DEMUXER
++    udfread_block_input udf_input;
++    udfread *udf;
++    DiscFile dvd_dir;
++    int dvd_fs_open;
++#endif
 +};
 +
 +static int discio_interrupted(DiscIO *io)
@@ -118,9 +159,25 @@ index 0000000..28120c6
 +    if (!pio || !*pio)
 +        return;
 +    io = *pio;
-+    if (io->pb)
++#if CONFIG_DVDVIDEO_DEMUXER
++    if (io->udf)
++        udfread_close(io->udf);
++#endif
++    if (io->owns_pb)
 +        avio_closep(&io->pb);
 +    av_freep(pio);
++}
++
++DiscIO *ff_disc_io_wrap(AVIOContext *pb, AVIOInterruptCB interrupt_cb)
++{
++    DiscIO *io = av_mallocz(sizeof(*io));
++
++    if (!io)
++        return NULL;
++    io->pb = pb;
++    io->interrupt_cb = interrupt_cb;
++    io->size = avio_size(pb);
++    return io;
 +}
 +
 +DiscIO *ff_disc_io_open(const char *url, const AVDictionary *opts,
@@ -153,29 +210,9 @@ index 0000000..28120c6
 +            *err = ret;
 +        return NULL;
 +    }
++    io->owns_pb = 1;
 +    io->size = avio_size(io->pb);
 +    return io;
-+}
-+
-+int ff_disc_stream_seek(void *opaque, uint64_t offset)
-+{
-+    DiscStreamPos *p = opaque;
-+    if (!p)
-+        return -1;
-+    p->pos = (int64_t)offset;
-+    return 0;
-+}
-+
-+int ff_disc_stream_read(void *opaque, void *buf, int size)
-+{
-+    DiscStreamPos *p = opaque;
-+    int n;
-+    if (!p || !p->io || size <= 0)
-+        return -1;
-+    n = ff_disc_io_read(p->io, p->pos, buf, size);
-+    if (n > 0)
-+        p->pos += n;
-+    return n < 0 ? -1 : n;
 +}
 +
 +static int map_open_error(int ret)
@@ -230,12 +267,8 @@ index 0000000..28120c6
 +    return 0;
 +}
 +
-+typedef struct IsoDir {
-+    uint32_t extent;
-+    uint32_t size;
-+} IsoDir;
-+
-+static int find_iso_dir(DiscIO *io, const IsoDir *parent, const char *wanted, IsoDir *out)
++static int find_iso_entry(DiscIO *io, const DiscFile *parent, const char *wanted, int dir,
++                          DiscFile *out)
 +{
 +    uint8_t sector[ISO_SECTOR_SIZE];
 +    uint32_t offset = 0;
@@ -266,15 +299,15 @@ index 0000000..28120c6
 +            name_len = record[32];
 +            if (33 + name_len > record_len)
 +                return AVERROR_INVALIDDATA;
-+            if ((record[25] & 2) && name_len > 0 && name_len < 128 &&
++            if (!!(record[25] & 2) == dir && name_len > 0 && name_len < 128 &&
 +                record[33] != 0 && record[33] != 1) {
 +                char name[128] = {0};
 +                memcpy(name, record + 33, name_len);
 +                if (name_len > 2 && name[name_len - 2] == ';' && name[name_len - 1] == '1')
 +                    name[name_len - 2] = 0;
 +                if (!av_strcasecmp(name, wanted)) {
-+                    memcpy(&out->extent, record + 2, 4);
-+                    memcpy(&out->size, record + 10, 4);
++                    out->extent = AV_RL32(record + 2);
++                    out->size = AV_RL32(record + 10);
 +                    return 1;
 +                }
 +            }
@@ -333,107 +366,167 @@ index 0000000..28120c6
 +#endif
 +
 +#if CONFIG_DVDVIDEO_DEMUXER
-+static void discio_dvd_log(void *opaque, dvd_logger_level_t level,
-+                          const char *fmt, va_list args)
++static int discio_udf_read(udfread_block_input *input, uint32_t lba, void *buf,
++                           uint32_t blocks, int flags)
 +{
-+    DiscIO *io = ((DiscStreamPos *)opaque)->io;
-+    AVBPrint buffer;
-+    char *message = NULL;
-+    char *safe;
-+    const char *source = io->probe_url;
-+    char *p;
++    DiscIO *io = (DiscIO *)((uint8_t *)input - offsetof(DiscIO, udf_input));
++    int ret;
 +
-+    if (level != DVD_LOGGER_LEVEL_ERROR && level != DVD_LOGGER_LEVEL_WARN)
-+        return;
-+    av_bprint_init(&buffer, 0, AV_BPRINT_SIZE_UNLIMITED);
-+    av_vbprintf(&buffer, fmt, args);
-+    if (!av_bprint_is_complete(&buffer)) {
-+        av_bprint_finalize(&buffer, NULL);
-+        return;
++    if (blocks > INT_MAX / ISO_SECTOR_SIZE)
++        return 0;
++    ret = ff_disc_io_read(io, (int64_t)lba * ISO_SECTOR_SIZE, buf, blocks * ISO_SECTOR_SIZE);
++    return ret < 0 ? 0 : ret / ISO_SECTOR_SIZE;
++}
++
++static uint32_t discio_udf_size(udfread_block_input *input)
++{
++    DiscIO *io = (DiscIO *)((uint8_t *)input - offsetof(DiscIO, udf_input));
++
++    return io->size > 0 ? FFMIN(io->size / ISO_SECTOR_SIZE, UINT32_MAX) : 0;
++}
++
++static int dvd_fs_open(DiscIO *io)
++{
++    uint8_t pvd[ISO_SECTOR_SIZE];
++    DiscFile root;
++    int ret;
++
++    if (io->dvd_fs_open)
++        return 0;
++    ret = ff_disc_io_read(io, 16LL * ISO_SECTOR_SIZE, pvd, sizeof(pvd));
++    if (ret != sizeof(pvd))
++        return ret < 0 ? ret : AVERROR_INVALIDDATA;
++    if (pvd[0] == 1 && !memcmp(pvd + 1, "CD001", 5) && pvd[6] == 1 && pvd[156] >= 34) {
++        root.extent = AV_RL32(pvd + 158);
++        root.size = AV_RL32(pvd + 166);
++        ret = find_iso_entry(io, &root, "VIDEO_TS", 1, &io->dvd_dir);
++        if (ret > 0) {
++            io->dvd_fs_open = 1;
++            return 0;
++        }
++        if (ret < 0)
++            return ret;
 +    }
-+    if (av_bprint_finalize(&buffer, &message) < 0)
-+        return;
-+    /* Redact before truncation so a long URL cannot leak credentials. */
-+    av_strstart(source, "file:", &source);
-+    safe = av_strireplace(message, source, "<source>");
-+    av_free(message);
-+    if (!safe)
-+        return;
-+    for (p = safe; *p; ++p)
-+        if (*p == '\r' || *p == '\n')
-+            *p = ' ';
-+    av_log(NULL, AV_LOG_WARNING, "[DiscProbe] id=%p stage=dvd libdvdread_level=%d message=%.1024s\n",
-+           io->probe_id, level, safe);
-+    av_free(safe);
++    if (!(io->udf = udfread_init()))
++        return AVERROR(ENOMEM);
++    io->udf_input.read = discio_udf_read;
++    io->udf_input.size = discio_udf_size;
++    io->first_io_error = 0;
++    ret = udfread_open_input(io->udf, &io->udf_input);
++    if (ret < 0 || io->first_io_error) {
++        udfread_close(io->udf);
++        io->udf = NULL;
++        return io->first_io_error ? io->first_io_error : AVERROR_INVALIDDATA;
++    }
++    io->dvd_fs_open = 1;
++    return 0;
++}
++
++int ff_disc_io_find_dvd_file(DiscIO *io, const char *name, DiscFile *file)
++{
++    int ret = dvd_fs_open(io);
++
++    if (ret < 0)
++        return ret;
++    if (io->udf) {
++        char path[64];
++        UDFFILE *f;
++        int64_t size;
++
++        snprintf(path, sizeof(path), "/VIDEO_TS/%s", name);
++        io->first_io_error = 0;
++        f = udfread_file_open(io->udf, path);
++        if (!f)
++            return io->first_io_error ? io->first_io_error : AVERROR(ENOENT);
++        file->extent = udfread_file_lba(f, 0);
++        size = udfread_file_size(f);
++        udfread_file_close(f);
++        if (!file->extent || size <= 0 || size > UINT32_MAX)
++            return AVERROR_INVALIDDATA;
++        file->size = size;
++        return 0;
++    }
++    ret = find_iso_entry(io, &io->dvd_dir, name, 0, file);
++    return ret > 0 ? 0 : ret < 0 ? ret : AVERROR(ENOENT);
++}
++
++static int dvd_ifo_load(DiscIO *io, const char *name, const char *magic, DiscDVDIfo *ifo)
++{
++    uint8_t mat[ISO_SECTOR_SIZE], *data;
++    DiscFile file;
++    uint32_t sectors;
++    int size, ret;
++
++    if ((ret = ff_disc_io_find_dvd_file(io, name, &file)) < 0)
++        return ret;
++    if (ifo->data && ifo->lba == file.extent)
++        return 0;
++    ret = ff_disc_io_read(io, (int64_t)file.extent * ISO_SECTOR_SIZE, mat, sizeof(mat));
++    if (ret != sizeof(mat))
++        return ret < 0 ? ret : AVERROR_INVALIDDATA;
++    sectors = AV_RB32(mat + 0x1C) + 1;
++    if (memcmp(mat, magic, 12) || !sectors || sectors > 4096 ||
++        sectors * ISO_SECTOR_SIZE > file.size)
++        return AVERROR_INVALIDDATA;
++    size = sectors * ISO_SECTOR_SIZE;
++    if (!(data = av_malloc(size)))
++        return AVERROR(ENOMEM);
++    ret = ff_disc_io_read(io, (int64_t)file.extent * ISO_SECTOR_SIZE, data, size);
++    if (ret != size) {
++        av_free(data);
++        return ret < 0 ? ret : AVERROR_INVALIDDATA;
++    }
++    av_free(ifo->data);
++    ifo->data = data;
++    ifo->size = size;
++    ifo->lba = file.extent;
++    return 0;
++}
++
++int ff_disc_io_read_dvd_ifo(DiscIO *io, int title_set, DiscDVDIfo *ifo)
++{
++    const char *magic = title_set ? "DVDVIDEO-VTS" : "DVDVIDEO-VMG";
++    char name[16];
++    int ret;
++
++    for (int backup = 0; backup < 2; backup++) {
++        if (title_set)
++            snprintf(name, sizeof(name), "VTS_%02d_0.%s", title_set, backup ? "BUP" : "IFO");
++        else
++            snprintf(name, sizeof(name), "VIDEO_TS.%s", backup ? "BUP" : "IFO");
++        ret = dvd_ifo_load(io, name, magic, ifo);
++        if (ret >= 0 || ret == AVERROR_EXIT || ret == AVERROR(ETIMEDOUT) || ret == AVERROR(ENOMEM))
++            return ret;
++    }
++    return ret;
 +}
 +
 +static int confirm_dvd(DiscIO *io)
 +{
-+    DiscStreamPos pos = { .io = io, .pos = 0 };
-+    dvd_logger_cb logcb = { .pf_log = discio_dvd_log };
-+    dvd_reader_stream_cb stream_cb = {0};
-+    dvd_reader_t *dvd = NULL;
-+    ifo_handle_t *vmg = NULL;
-+    /* Match dvdvideo's native file/UNC entry; other protocols keep stream I/O. */
-+    const char *protocol = avio_find_protocol_name(io->probe_url);
-+    int native_file = protocol && !strcmp(protocol, "file");
-+    int opened = 0, ok = 0, open_errno = 0;
-+    int ret = discio_interrupted(io);
++    DiscDVDIfo vmg = { 0 };
++    int ret;
 +
 +    io->stage = "dvd";
 +    io->first_io_error = 0;
-+    av_log(NULL, AV_LOG_INFO, "[DiscProbe] id=%p stage=dvd begin backend=%s\n",
-+           io->probe_id, native_file ? "file" : "stream");
-+    if (ret < 0)
-+        goto done;
-+    errno = 0;
-+    if (native_file) {
-+        const char *path = io->probe_url;
-+        av_strstart(path, "file:", &path);
-+        dvd = DVDOpen2(&pos, &logcb, path);
-+    } else {
-+        stream_cb.pf_seek = ff_disc_stream_seek;
-+        stream_cb.pf_read = ff_disc_stream_read;
-+        dvd = DVDOpenStream2(&pos, &logcb, &stream_cb);
-+    }
-+    open_errno = errno;
-+    opened = dvd != NULL;
-+    ret = discio_interrupted(io);
-+    if (ret < 0)
-+        goto done;
-+    if (!dvd) {
-+        ret = io->first_io_error ? io->first_io_error :
-+              (open_errno ? AVERROR(open_errno) : AVERROR(EIO));
-+        goto done;
-+    }
-+    vmg = ifoOpen(dvd, 0);
-+    ok = vmg && vmg->vmgi_mat;
-+    ret = discio_interrupted(io);
-+    if (ret >= 0 && !ok)
-+        ret = io->first_io_error;
-+
-+done:
-+    if (vmg)
-+        ifoClose(vmg);
-+    if (dvd)
-+        DVDClose(dvd);
-+    av_log(NULL, AV_LOG_INFO,
-+           "[DiscProbe] id=%p stage=dvd opened=%d ifo=%d open_errno=%d raw_error=%d\n",
-+           io->probe_id, opened, ok, open_errno, ret);
-+    return ret < 0 ? ret : ok;
++    ret = ff_disc_io_read_dvd_ifo(io, 0, &vmg);
++    av_free(vmg.data);
++    ret = ret >= 0 ? 1 : ret == AVERROR(ENOENT) ? 0 : ret;
++    av_log(NULL, AV_LOG_INFO, "[DiscProbe] id=%p stage=dvd vmg=%d raw_error=%d\n",
++           io->probe_id, ret > 0, ret < 0 ? ret : 0);
++    return ret;
 +}
 +#endif
 +
-+static int classify_iso9660(DiscIO *io, const IsoDir *root, enum AVDiscImageType *type)
++static int classify_iso9660(DiscIO *io, const DiscFile *root, enum AVDiscImageType *type)
 +{
-+    IsoDir child, stream;
++    DiscFile child, stream;
 +    int ret;
 +
-+    ret = find_iso_dir(io, root, "UMD_VIDEO", &child);
++    ret = find_iso_entry(io, root, "UMD_VIDEO", 1, &child);
 +    if (ret < 0)
 +        return ret;
 +    if (ret > 0) {
-+        ret = find_iso_dir(io, &child, "STREAM", &stream);
++        ret = find_iso_entry(io, &child, "STREAM", 1, &stream);
 +        if (ret < 0)
 +            return ret;
 +        if (ret > 0) {
@@ -442,7 +535,7 @@ index 0000000..28120c6
 +        }
 +    }
 +
-+    ret = find_iso_dir(io, root, "BDMV", &child);
++    ret = find_iso_entry(io, root, "BDMV", 1, &child);
 +    if (ret < 0)
 +        return ret;
 +    if (ret > 0) {
@@ -458,7 +551,7 @@ index 0000000..28120c6
 +#endif
 +    }
 +
-+    ret = find_iso_dir(io, root, "VIDEO_TS", &child);
++    ret = find_iso_entry(io, root, "VIDEO_TS", 1, &child);
 +    if (ret < 0)
 +        return ret;
 +    if (ret > 0) {
@@ -486,7 +579,7 @@ index 0000000..28120c6
 +    void *id = &io;
 +    int64_t started_us = av_gettime_relative();
 +    uint8_t pvd[ISO_SECTOR_SIZE];
-+    IsoDir root;
++    DiscFile root;
 +    int ret = 0, error, udf_hint = 0, backend_error = 0;
 +    const char *stage = "open";
 +    const char *protocol = normalized_url ? avio_find_protocol_name(normalized_url) : NULL;
@@ -515,7 +608,6 @@ index 0000000..28120c6
 +    if (!io)
 +        goto done;
 +    io->probe_id = id;
-+    io->probe_url = normalized_url;
 +    io->stage = "seek";
 +    av_log(NULL, AV_LOG_INFO, "[DiscProbe] id=%p stage=open size=%"PRId64" seekable=%d\n",
 +           id, io->size, io->pb->seekable);
@@ -530,8 +622,8 @@ index 0000000..28120c6
 +        goto done;
 +    }
 +    if (pvd[0] == 1 && !memcmp(pvd + 1, "CD001", 5) && pvd[6] == 1 && pvd[156] >= 34) {
-+        memcpy(&root.extent, pvd + 158, 4);
-+        memcpy(&root.size, pvd + 166, 4);
++        root.extent = AV_RL32(pvd + 158);
++        root.size = AV_RL32(pvd + 166);
 +        av_log(NULL, AV_LOG_INFO,
 +               "[DiscProbe] id=%p stage=iso9660 root_extent=%u root_size=%u\n",
 +               id, root.extent, root.size);
@@ -611,10 +703,9 @@ index 0000000..28120c6
 +}
 diff --git a/libavformat/disc_io.h b/libavformat/disc_io.h
 new file mode 100644
-index 0000000..6ce0347
 --- /dev/null
 +++ b/libavformat/disc_io.h
-@@ -0,0 +1,49 @@
+@@ -0,0 +1,59 @@
 +#ifndef AVFORMAT_DISC_IO_H
 +#define AVFORMAT_DISC_IO_H
 +
@@ -642,10 +733,16 @@ index 0000000..6ce0347
 +
 +typedef struct DiscIO DiscIO;
 +
-+typedef struct DiscStreamPos {
-+    DiscIO *io;
-+    int64_t pos;
-+} DiscStreamPos;
++typedef struct DiscFile {
++    uint32_t extent;
++    uint32_t size;
++} DiscFile;
++
++typedef struct DiscDVDIfo {
++    uint8_t *data;
++    int size;
++    uint32_t lba;
++} DiscDVDIfo;
 +
 +int av_disc_probe(const char *normalized_url,
 +                  const AVDictionary *io_options,
@@ -657,10 +754,14 @@ index 0000000..6ce0347
 +                        AVIOInterruptCB interrupt_cb, int64_t startup_deadline_us,
 +                        int *err);
 +void ff_disc_io_close(DiscIO **io);
++/* Borrows pb; closing the DiscIO does not close the caller's AVIOContext. */
++DiscIO *ff_disc_io_wrap(AVIOContext *pb, AVIOInterruptCB interrupt_cb);
 +int ff_disc_io_read(DiscIO *io, int64_t offset, void *buf, int size);
 +int64_t ff_disc_io_size(DiscIO *io);
 +
-+int ff_disc_stream_seek(void *opaque, uint64_t offset);
-+int ff_disc_stream_read(void *opaque, void *buf, int size);
++/* DVD helpers are available when CONFIG_DVDVIDEO_DEMUXER is enabled. */
++int ff_disc_io_find_dvd_file(DiscIO *io, const char *name, DiscFile *file);
++/* Loads VIDEO_TS (title_set == 0) or VTS_nn_0, falling back to its BUP. */
++int ff_disc_io_read_dvd_ifo(DiscIO *io, int title_set, DiscDVDIfo *ifo);
 +
 +#endif

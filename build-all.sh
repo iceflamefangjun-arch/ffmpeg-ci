@@ -21,7 +21,7 @@ esac
 #for subdir in amf ffnvcodec; do pushd ${subdir} && sh b.sh && popd || exit; done
 
 #for subdir in json-c pthread-win32 libudfread libdvdread libbluray x264 x265 libvpx fdk-aac opus libmp3lame freetype2 libmfx zlib ffmpeg; do
-for subdir in json-c pthread-win32 libudfread libdvdread libdvdnav libbluray zlib libxml2 libsmb2 ffmpeg; do
+for subdir in json-c pthread-win32 libudfread libbluray zlib libxml2 libsmb2 ffmpeg; do
 #for subdir in ffmpeg; do
   if [ ! -d "${subdir}" ]; then
     echo "Required dependency directory missing: ${subdir}" >&2

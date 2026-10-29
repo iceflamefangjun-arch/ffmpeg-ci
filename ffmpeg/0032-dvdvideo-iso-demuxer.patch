@@ -1,0 +1,833 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: shplayer <shplayer@local>
+Date: Thu, 29 Oct 2026 00:00:00 +0800
+Subject: [PATCH] dvdvideo demuxer for ISO images without libdvdread/libdvdnav
+
+diff --git a/configure b/configure
+--- a/configure
++++ b/configure
+@@ -3624,8 +3624,8 @@
+ dtshd_demuxer_select="dca_parser"
+ dv_demuxer_select="dvprofile"
+ dv_muxer_select="dvprofile"
+-dvdvideo_demuxer_select="mpegps_demuxer"
+-dvdvideo_demuxer_deps="libdvdnav libdvdread libudfread"
++dvdvideo_demuxer_select="mpegps_demuxer mpegvideo_demuxer"
++dvdvideo_demuxer_deps="libudfread"
+ dxa_demuxer_select="riffdec"
+ eac3_demuxer_select="ac3_parser"
+ evc_demuxer_select="evc_frame_merge_bsf evc_parser"
+diff --git a/libavformat/Makefile b/libavformat/Makefile
+index 6a68962..f8a08c0 100644
+--- a/libavformat/Makefile
++++ b/libavformat/Makefile
+@@ -213,7 +213,7 @@ OBJS-$(CONFIG_DTS_MUXER)                 += rawenc.o
+ OBJS-$(CONFIG_DV_MUXER)                  += dvenc.o
+ OBJS-$(CONFIG_DVBSUB_DEMUXER)            += dvbsub.o rawdec.o
+ OBJS-$(CONFIG_DVBTXT_DEMUXER)            += dvbtxt.o rawdec.o
+-OBJS-$(CONFIG_DVDVIDEO_DEMUXER)          += dvdvideodec.o dvdclut.o
++OBJS-$(CONFIG_DVDVIDEO_DEMUXER)          += dvdisodec.o dvdclut.o avlanguage.o
+ OBJS-$(CONFIG_DXA_DEMUXER)               += dxa.o
+ OBJS-$(CONFIG_EA_CDATA_DEMUXER)          += eacdata.o
+ OBJS-$(CONFIG_EA_DEMUXER)                += electronicarts.o
+diff --git a/libavformat/dvdisodec.c b/libavformat/dvdisodec.c
+new file mode 100644
+--- /dev/null
++++ b/libavformat/dvdisodec.c
+@@ -0,0 +1,796 @@
++/*
++ * DVD-Video demuxer for ISO images, without libdvdread/libdvdnav
++ *
++ * This file is part of FFmpeg.
++ *
++ * FFmpeg is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * FFmpeg is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with FFmpeg; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
++ */
++
++/*
++ * Plays one title of a DVD-Video ISO 9660 or UDF image, without menus. The title's
++ * cells are walked VOBU by VOBU through their NAV packets, which also follows
++ * the first angle of interleaved blocks. The VOBUs feed the MPEG-PS demuxer;
++ * when the NAV timestamps are discontinuous, the sub-demuxer is drained and
++ * restarted with a new offset, so the output timeline stays continuous.
++ */
++
++#include "libavcodec/ac3_parser.h"
++#include "libavutil/channel_layout.h"
++#include "libavutil/intreadwrite.h"
++#include "libavutil/mem.h"
++#include "libavutil/opt.h"
++
++#include "avformat.h"
++#include "avio_internal.h"
++#include "avlanguage.h"
++#include "demux.h"
++#include "dvdclut.h"
++#include "disc_io.h"
++#include "internal.h"
++
++#define DVD_SECTOR              2048
++#define DVD_TIME_BASE           90000
++#define DVD_MAX_PTTS            999
++#define DVD_MAX_VOBUS           (1 << 22)
++#define DVD_SUBDEMUX_SECTORS    32
++
++typedef struct DVDCell {
++    uint32_t first_vobu;        /* sectors relative to the title set VOBS */
++    uint32_t last_vobu;
++    uint32_t last_sector;
++    uint16_t vob_id;
++    uint8_t  cell_id;
++    int64_t  start;             /* title time of the cell start */
++} DVDCell;
++
++typedef struct DVDISOContext {
++    const AVClass *class;
++    int opt_title;
++    DiscIO *disc_io;
++
++    uint32_t vobs;              /* first sector of the title set VOBS */
++    uint32_t admap;             /* sector of the VOBU address map, 0 if none */
++    DVDCell *cells;
++    int nb_cells;
++    int64_t duration;
++    uint8_t *vobus;             /* big-endian VOBU sectors, loaded on the first seek */
++    int nb_vobus;
++
++    /* VOBU reader, sectors relative to the VOBS */
++    int cell;
++    uint32_t sector;            /* next sector to read */
++    uint32_t vobu_left;         /* sectors left in the current VOBU */
++    uint32_t vobu_next;
++    int64_t vobu_e_ptm;         /* end PTM of the previous VOBU, unset after a jump */
++    int64_t jump_time;          /* title time of the VOBU jumped to */
++    int64_t ts_offset;          /* maps sub-demuxer timestamps to title time */
++    int64_t next_ts_offset;
++    int discontinuity;          /* sub-demuxer drains before next_ts_offset applies */
++
++    AVFormatContext *mpeg_ctx;
++    FFIOContext mpeg_pb;
++    int play_started;
++    int64_t *prev_pts;
++} DVDISOContext;
++
++static int dvd_read(AVFormatContext *s, uint32_t lba, uint8_t *buf, int size)
++{
++    DVDISOContext *c = s->priv_data;
++    int ret = ff_disc_io_read(c->disc_io, (int64_t)lba * DVD_SECTOR, buf, size);
++
++    return ret == size ? 0 : ret < 0 ? ret : AVERROR_INVALIDDATA;
++}
++
++static const uint8_t *dvd_ifo_ptr(const DiscDVDIfo *ifo, int64_t offset, int64_t len)
++{
++    return offset >= 0 && len >= 0 && offset + len <= ifo->size ? ifo->data + offset : NULL;
++}
++
++/* BCD hh:mm:ss:ff; the top bits of ff give the rate, NTSC counts 30 frames per second */
++static int64_t dvd_time(const uint8_t *t)
++{
++#define BCD(x) (((x) >> 4) * 10 + ((x) & 0x0F))
++    static const int fps[4]         = { 0, 25,   0, 30   };
++    static const int frame_ticks[4] = { 0, 3600, 0, 3003 };
++    int64_t secs = (BCD(t[0]) * 60 + BCD(t[1])) * 60 + BCD(t[2]);
++    int rate = t[3] >> 6;
++
++    if (!fps[rate])
++        return secs * DVD_TIME_BASE;
++    return (secs * fps[rate] + BCD(t[3] & 0x3F)) * frame_ticks[rate];
++#undef BCD
++}
++
++/* Returns the (PGCN, PGN) pairs of the title's chapters. */
++static const uint8_t *dvd_title_ptts(const DiscDVDIfo *vts, int ttn, int *nb)
++{
++    int64_t base = (int64_t)AV_RB32(vts->data + 0xC8) * DVD_SECTOR, start, end;
++    const uint8_t *hdr = dvd_ifo_ptr(vts, base, 8), *offsets;
++    int nb_titles;
++
++    if (!hdr || ttn < 1 || ttn > (nb_titles = AV_RB16(hdr)) ||
++        !(offsets = dvd_ifo_ptr(vts, base + 8, 4 * nb_titles)))
++        return NULL;
++    start = AV_RB32(offsets + 4 * (ttn - 1));
++    end   = ttn < nb_titles ? AV_RB32(offsets + 4 * ttn) : AV_RB32(hdr + 4) + 1LL;
++    *nb   = FFMIN((end - start) / 4, DVD_MAX_PTTS);
++    return *nb > 0 ? dvd_ifo_ptr(vts, base + start, 4LL * *nb) : NULL;
++}
++
++static int dvd_ptt_first_of_pgc(const uint8_t *ptt, int i)
++{
++    for (int j = 0; j < i; j++)
++        if (AV_RB16(ptt + 4 * j) == AV_RB16(ptt + 4 * i))
++            return 0;
++    return 1;
++}
++
++static int64_t dvd_pgc_offset(const DiscDVDIfo *vts, int pgcn)
++{
++    int64_t base = (int64_t)AV_RB32(vts->data + 0xCC) * DVD_SECTOR;
++    const uint8_t *hdr = dvd_ifo_ptr(vts, base, 8), *srp;
++
++    if (!hdr || pgcn < 1 || pgcn > AV_RB16(hdr) || !(srp = dvd_ifo_ptr(vts, base + 8 * pgcn, 8)))
++        return -1;
++    base += AV_RB32(srp + 4);
++    return dvd_ifo_ptr(vts, base, 0xEC) ? base : -1;
++}
++
++static int64_t dvd_title_duration(const DiscDVDIfo *vts, int ttn)
++{
++    const uint8_t *ptt;
++    int64_t duration = 0, pgc;
++    int nb_ptt;
++
++    if (!(ptt = dvd_title_ptts(vts, ttn, &nb_ptt)))
++        return -1;
++    for (int i = 0; i < nb_ptt; i++)
++        if (dvd_ptt_first_of_pgc(ptt, i) && (pgc = dvd_pgc_offset(vts, AV_RB16(ptt + 4 * i))) >= 0)
++            duration += dvd_time(vts->data + pgc + 4);
++    return duration;
++}
++
++/* Picks the requested title or the longest one, and loads its title set. */
++static int dvd_title_select(AVFormatContext *s, const DiscDVDIfo *vmg,
++                            DiscDVDIfo *vts, int *ttn)
++{
++    DVDISOContext *c = s->priv_data;
++    int64_t base = (int64_t)AV_RB32(vmg->data + 0xC4) * DVD_SECTOR, best_duration = -1;
++    const uint8_t *hdr = dvd_ifo_ptr(vmg, base, 8), *tt, *entry;
++    char name[16];
++    DiscFile vobs;
++    int nb_titles, best = 0, ret;
++
++    if (!hdr || !(tt = dvd_ifo_ptr(vmg, base + 8, 12 * (nb_titles = AV_RB16(hdr)))))
++        return AVERROR_INVALIDDATA;
++    for (int i = 1; i <= nb_titles; i++) {
++        int64_t duration;
++        entry = tt + 12 * (i - 1);
++        if (c->opt_title && i != c->opt_title)
++            continue;
++        /* protected discs list dummy titles */
++        ret = ff_disc_io_read_dvd_ifo(c->disc_io, entry[6], vts);
++        if (ret == AVERROR_EXIT || ret == AVERROR(ETIMEDOUT) || ret == AVERROR(ENOMEM))
++            return ret;
++        if (ret < 0)
++            continue;
++        duration = dvd_title_duration(vts, entry[7]);
++        if (duration > best_duration) {
++            best          = i;
++            best_duration = duration;
++        }
++    }
++    if (!best) {
++        av_log(s, AV_LOG_ERROR, "Title %d not found\n", c->opt_title);
++        return AVERROR_INVALIDDATA;
++    }
++
++    entry = tt + 12 * (best - 1);
++    snprintf(name, sizeof(name), "VTS_%02d_1.VOB", entry[6]);
++    if ((ret = ff_disc_io_read_dvd_ifo(c->disc_io, entry[6], vts)) < 0 ||
++        (ret = ff_disc_io_find_dvd_file(c->disc_io, name, &vobs)) < 0)
++        return ret;
++    *ttn     = entry[7];
++    c->vobs  = vobs.extent;
++    c->admap = AV_RB32(vts->data + 0xE4) ? vts->lba + AV_RB32(vts->data + 0xE4) : 0;
++    av_log(s, AV_LOG_INFO, "Playing title %d of %d\n", best, nb_titles);
++    return 0;
++}
++
++/* Appends the title's cells of the PGC that PTT i refers to, and its chapter start times. */
++static int dvd_pgc_setup(AVFormatContext *s, const DiscDVDIfo *vts, const uint8_t *ptt, int nb_ptt,
++                         int i, int64_t *chapters, int64_t *first_pgc)
++{
++    DVDISOContext *c = s->priv_data;
++    int pgcn = AV_RB16(ptt + 4 * i), pgn = INT_MAX, nb_pg, nb_cells, ret;
++    int64_t pgc = dvd_pgc_offset(vts, pgcn), cell_start[256];
++    const uint8_t *p, *map, *playback, *position;
++
++    if (pgc < 0)
++        goto invalid;
++    p        = vts->data + pgc;
++    nb_pg    = p[2];
++    nb_cells = p[3];
++    map      = dvd_ifo_ptr(vts, pgc + AV_RB16(p + 0xE6), nb_pg);
++    playback = dvd_ifo_ptr(vts, pgc + AV_RB16(p + 0xE8), 24 * nb_cells);
++    position = dvd_ifo_ptr(vts, pgc + AV_RB16(p + 0xEA), 4 * nb_cells);
++    for (int j = i; j < nb_ptt; j++)
++        if (AV_RB16(ptt + 4 * j) == pgcn)
++            pgn = FFMIN(pgn, AV_RB16(ptt + 4 * j + 2));
++    if (!map || !playback || !position || pgn < 1 || pgn > nb_pg ||
++        map[pgn - 1] < 1 || map[pgn - 1] > nb_cells)
++        goto invalid;
++    if (*first_pgc < 0)
++        *first_pgc = pgc;
++
++    for (int n = map[pgn - 1]; n <= nb_cells; n++) {
++        const uint8_t *e = playback + 24 * (n - 1), *id = position + 4 * (n - 1);
++        DVDCell cell = {
++            .first_vobu  = AV_RB32(e + 8),
++            .last_vobu   = AV_RB32(e + 16),
++            .last_sector = AV_RB32(e + 20),
++            .vob_id      = AV_RB16(id),
++            .cell_id     = id[3],
++            .start       = c->duration,
++        };
++        cell_start[n] = c->duration;
++        /* of an angle block, play the first angle's cell */
++        if ((e[0] & 0x30) == 0x10 && (e[0] & 0xC0) != 0x40)
++            continue;
++        /* like upstream, skip padding cells at the start of the title */
++        if (!c->nb_cells && dvd_time(e + 4) < DVD_TIME_BASE)
++            continue;
++        if (cell.first_vobu > cell.last_vobu || cell.last_vobu > cell.last_sector ||
++            cell.last_sector == UINT32_MAX) {
++            av_log(s, AV_LOG_WARNING, "Skipping invalid cell %d of PGC %d\n", n, pgcn);
++            continue;
++        }
++        if ((ret = av_reallocp_array(&c->cells, c->nb_cells + 1, sizeof(*c->cells))) < 0) {
++            c->nb_cells = 0;
++            return ret;
++        }
++        c->cells[c->nb_cells++] = cell;
++        c->duration += dvd_time(e + 4);
++    }
++
++    for (int j = i; j < nb_ptt; j++) {
++        int pg = AV_RB16(ptt + 4 * j + 2);
++        if (AV_RB16(ptt + 4 * j) == pgcn && pg >= pgn && pg <= nb_pg &&
++            map[pg - 1] >= map[pgn - 1] && map[pg - 1] <= nb_cells)
++            chapters[j] = cell_start[map[pg - 1]];
++    }
++    return 0;
++
++invalid:
++    av_log(s, AV_LOG_ERROR, "Invalid PGC %d\n", pgcn);
++    return AVERROR_INVALIDDATA;
++}
++
++static int dvd_title_setup(AVFormatContext *s, const DiscDVDIfo *vts, int ttn, int64_t *first_pgc)
++{
++    DVDISOContext *c = s->priv_data;
++    const uint8_t *ptt;
++    int64_t *chapters, prev = -1;
++    int nb_ptt, ret = 0;
++
++    if (!(ptt = dvd_title_ptts(vts, ttn, &nb_ptt)))
++        return AVERROR_INVALIDDATA;
++    if (!(chapters = av_malloc_array(nb_ptt, sizeof(*chapters))))
++        return AVERROR(ENOMEM);
++    for (int i = 0; i < nb_ptt; i++)
++        chapters[i] = AV_NOPTS_VALUE;
++    *first_pgc = -1;
++
++    for (int i = 0; i < nb_ptt && ret >= 0; i++)
++        if (dvd_ptt_first_of_pgc(ptt, i))
++            ret = dvd_pgc_setup(s, vts, ptt, nb_ptt, i, chapters, first_pgc);
++    if (ret >= 0 && !c->nb_cells) {
++        av_log(s, AV_LOG_ERROR, "Title has no playable cells\n");
++        ret = AVERROR_INVALIDDATA;
++    }
++
++    for (int i = 0; i < nb_ptt && ret >= 0; i++) {
++        int64_t end = c->duration;
++        if (chapters[i] == AV_NOPTS_VALUE || chapters[i] <= prev || chapters[i] >= c->duration)
++            continue;
++        for (int j = i + 1; j < nb_ptt; j++) {
++            if (chapters[j] != AV_NOPTS_VALUE && chapters[j] > chapters[i]) {
++                end = chapters[j];
++                break;
++            }
++        }
++        if (!avpriv_new_chapter(s, s->nb_chapters, (AVRational){ 1, DVD_TIME_BASE },
++                                chapters[i], end, NULL))
++            ret = AVERROR(ENOMEM);
++        prev = chapters[i];
++    }
++    av_free(chapters);
++    return ret;
++}
++
++static int dvd_add_stream(AVFormatContext *s, int id, enum AVMediaType type,
++                          enum AVCodecID codec_id, AVStream **pst)
++{
++    AVStream *st;
++
++    *pst = NULL;
++    /* IFO tables can list the same stream twice */
++    for (int i = 0; i < s->nb_streams; i++)
++        if (s->streams[i]->id == id)
++            return 0;
++    if (!(st = avformat_new_stream(s, NULL)))
++        return AVERROR(ENOMEM);
++    st->id                   = id;
++    st->codecpar->codec_type = type;
++    st->codecpar->codec_id   = codec_id;
++    ffstream(st)->need_parsing = AVSTREAM_PARSE_HEADERS;
++    avpriv_set_pts_info(st, 64, 1, DVD_TIME_BASE);
++    *pst = st;
++    return 0;
++}
++
++static void dvd_set_language(AVStream *st, const uint8_t *code)
++{
++    char lang[3] = { code[0], code[1] };
++    const char *iso = ff_convert_lang_to(lang, AV_LANG_ISO639_2_BIBL);
++
++    if (iso)
++        av_dict_set(&st->metadata, "language", iso, 0);
++}
++
++static int dvd_streams_setup(AVFormatContext *s, const DiscDVDIfo *vts, int64_t pgc)
++{
++    static const int widths[4] = { 720, 704, 352, 352 };
++    const uint8_t *p = vts->data + pgc;
++    int video = AV_RB16(vts->data + 0x200), size = (video >> 2) & 3;
++    int pal = ((video >> 12) & 3) == 1, wide = (video >> 10) & 3;
++    uint32_t clut[FF_DVDCLUT_CLUT_LEN];
++    AVStream *st;
++    int ret;
++
++    if ((ret = dvd_add_stream(s, 0x1E0, AVMEDIA_TYPE_VIDEO,
++                              video >> 14 ? AV_CODEC_ID_MPEG2VIDEO : AV_CODEC_ID_MPEG1VIDEO, &st)) < 0)
++        return ret;
++    st->codecpar->width       = widths[size];
++    st->codecpar->height      = (pal ? 576 : 480) >> (size == 3);
++    st->codecpar->format      = AV_PIX_FMT_YUV420P;
++    st->codecpar->color_range = AVCOL_RANGE_MPEG;
++    st->avg_frame_rate        = pal ? (AVRational){ 25, 1 } : (AVRational){ 30000, 1001 };
++#if FF_API_R_FRAME_RATE
++    st->r_frame_rate          = st->avg_frame_rate;
++#endif
++    ffstream(st)->display_aspect_ratio = wide ? (AVRational){ 16, 9 } : (AVRational){ 4, 3 };
++
++    for (int i = 0; i < FFMIN(AV_RB16(vts->data + 0x202), 8); i++) {
++        const uint8_t *attr = vts->data + 0x204 + 8 * i;
++        int control = AV_RB16(p + 0x0C + 2 * i), n = (control >> 8) & 0x7F, id;
++        enum AVCodecID codec_id;
++
++        if (!(control & 0x8000))
++            continue;
++        switch (attr[0] >> 5) {
++        case 0: codec_id = AV_CODEC_ID_AC3;     id = 0x80  + n; break;
++        case 2: codec_id = AV_CODEC_ID_MP1;     id = 0x1C0 + n; break;
++        case 3: codec_id = AV_CODEC_ID_MP2;     id = 0x1C0 + n; break;
++        case 4: codec_id = AV_CODEC_ID_PCM_DVD; id = 0xA0  + n; break;
++        case 6: codec_id = AV_CODEC_ID_DTS;     id = 0x88  + n; break;
++        default:
++            av_log(s, AV_LOG_WARNING, "Unsupported audio format %d\n", attr[0] >> 5);
++            continue;
++        }
++        if ((ret = dvd_add_stream(s, id, AVMEDIA_TYPE_AUDIO, codec_id, &st)) < 0)
++            return ret;
++        if (!st)
++            continue;
++        st->codecpar->sample_rate = codec_id == AV_CODEC_ID_PCM_DVD && (attr[1] & 0x30) ? 96000 : 48000;
++        av_channel_layout_default(&st->codecpar->ch_layout, (attr[1] & 7) + 1);
++        if ((attr[0] & 3) == 1)
++            st->disposition |= AV_DISPOSITION_KARAOKE;
++        if (attr[5] == 2)
++            st->disposition |= AV_DISPOSITION_VISUAL_IMPAIRED;
++        if (attr[5] == 3 || attr[5] == 4)
++            st->disposition |= AV_DISPOSITION_COMMENT;
++        dvd_set_language(st, attr + 2);
++    }
++
++    for (int i = 0; i < FF_DVDCLUT_CLUT_LEN; i++)
++        clut[i] = AV_RB32(p + 0xA4 + 4 * i);
++    if ((ret = ff_dvdclut_yuv_to_rgb(clut, FF_DVDCLUT_CLUT_SIZE)) < 0)
++        return ret;
++    for (int i = 0; i < FFMIN(AV_RB16(vts->data + 0x254), 32); i++) {
++        const uint8_t *attr = vts->data + 0x256 + 6 * i;
++        uint32_t control = AV_RB32(p + 0x1C + 4 * i);
++
++        if (!(control & 0x80000000))
++            continue;
++        /* the 4:3 or the widescreen variant of the subpicture */
++        if ((ret = dvd_add_stream(s, 0x20 + ((control >> (wide ? 16 : 24)) & 0x1F),
++                                  AVMEDIA_TYPE_SUBTITLE, AV_CODEC_ID_DVD_SUBTITLE, &st)) < 0)
++            return ret;
++        if (!st)
++            continue;
++        if ((ret = ff_dvdclut_palette_extradata_cat(clut, FF_DVDCLUT_CLUT_SIZE, st->codecpar)) < 0)
++            return ret;
++        if (attr[4] == 9)
++            st->disposition |= AV_DISPOSITION_FORCED;
++        dvd_set_language(st, attr + 2);
++    }
++    return 0;
++}
++
++/* Returns 1 if the sector is a NAV packet, filling nav. */
++static int dvd_read_nav(AVFormatContext *s, uint32_t lba, uint8_t *nav)
++{
++    DVDISOContext *c = s->priv_data;
++    int ret = dvd_read(s, c->vobs + lba, nav, DVD_SECTOR);
++
++    if (ret < 0)
++        return ret;
++    return AV_RB32(nav) == 0x1BA && AV_RB32(nav + 0x26) == 0x1BF && nav[0x2C] == 0 &&
++           AV_RB32(nav + 0x400) == 0x1BF && nav[0x406] == 1;
++}
++
++#define NAV_PCI(nav) ((nav) + 0x2D)
++#define NAV_DSI(nav) ((nav) + 0x407)
++
++/* Enters the VOBU at c->vobu_next, or the next cell's first VOBU. */
++static int dvd_next_vobu(AVFormatContext *s)
++{
++    DVDISOContext *c = s->priv_data;
++    const DVDCell *cell;
++    uint8_t nav[DVD_SECTOR];
++    uint32_t lba, ea, link, angle_link;
++    int64_t next, s_ptm;
++    int ret;
++
++    while (c->cell < c->nb_cells && (c->vobu_next < c->cells[c->cell].first_vobu ||
++                                     c->vobu_next > c->cells[c->cell].last_vobu))
++        if (++c->cell < c->nb_cells)
++            c->vobu_next = c->cells[c->cell].first_vobu;
++    if (c->cell >= c->nb_cells)
++        return AVERROR_EOF;
++    cell = &c->cells[c->cell];
++    lba  = c->vobu_next;
++
++    if ((ret = dvd_read_nav(s, lba, nav)) < 0)
++        return ret;
++    if (!ret) {
++        av_log(s, AV_LOG_WARNING, "No NAV packet at sector %"PRIu32", reading the rest of the cell\n", lba);
++        c->sector    = lba;
++        c->vobu_left = cell->last_sector - lba + 1;
++        c->vobu_next = cell->last_vobu + 1;
++        return 0;
++    }
++
++    ea = AV_RB32(NAV_DSI(nav) + 0x08);
++    /* VOBU_SRI.next_vobu skips blocks belonging to other angles. */
++    link = AV_RB32(NAV_DSI(nav) + 0x13A) & 0x3FFFFFFF;
++    next = link == 0x3FFFFFFF ? cell->last_vobu + 1LL : lba + (int64_t)link;
++    /* At the end of an ILVU, follow angle 1's non-seamless or seamless link. */
++    if ((AV_RB16(NAV_DSI(nav) + 0x20) & 0xF000) == 0x5000) {
++        angle_link = AV_RB32(NAV_PCI(nav) + 0x3C); /* NSML_AGLI[0] */
++        if (!angle_link) {
++            angle_link = AV_RB32(NAV_DSI(nav) + 0xB4); /* SML_AGLI[0].address */
++            if (angle_link)
++                ea = AV_RB32(NAV_DSI(nav) + 0x22); /* ILVU_EA */
++        }
++        link = angle_link & 0x3FFFFFFF;
++        if (link == 0x3FFFFFFF)
++            next = cell->last_vobu + 1LL;
++        else if (link)
++            next = lba + (angle_link & 0x80000000 ? -(int64_t)link : (int64_t)link);
++    }
++    c->sector    = lba + 1;
++    c->vobu_left = FFMIN(lba + (int64_t)ea, cell->last_sector) - lba;
++    c->vobu_next = next != lba && next >= cell->first_vobu && next <= cell->last_vobu ?
++                   next : cell->last_vobu + 1;
++
++    s_ptm = AV_RB32(NAV_PCI(nav) + 0x0C);
++    if (c->vobu_e_ptm == AV_NOPTS_VALUE) {
++        c->ts_offset = c->jump_time - s_ptm;
++    } else if (s_ptm != c->vobu_e_ptm) {
++        c->next_ts_offset = c->ts_offset + c->vobu_e_ptm - s_ptm;
++        c->discontinuity  = 1;
++    }
++    c->vobu_e_ptm = AV_RB32(NAV_PCI(nav) + 0x10);
++    return 0;
++}
++
++static int dvd_read_data(void *opaque, uint8_t *buf, int buf_size)
++{
++    AVFormatContext *s = opaque;
++    DVDISOContext *c = s->priv_data;
++    int count, ret;
++
++    while (!c->vobu_left && !c->discontinuity)
++        if ((ret = dvd_next_vobu(s)) < 0)
++            return ret;
++    if (c->discontinuity)
++        return AVERROR_EOF;
++
++    count = FFMIN(buf_size / DVD_SECTOR, c->vobu_left);
++    if ((ret = dvd_read(s, c->vobs + c->sector, buf, count * DVD_SECTOR)) < 0)
++        return ret;
++    c->sector    += count;
++    c->vobu_left -= count;
++    return count * DVD_SECTOR;
++}
++
++static void dvd_subdemux_close(AVFormatContext *s)
++{
++    DVDISOContext *c = s->priv_data;
++
++    av_freep(&c->mpeg_pb.pub.buffer);
++    avformat_close_input(&c->mpeg_ctx);
++}
++
++static int dvd_subdemux_open(AVFormatContext *s)
++{
++    extern const FFInputFormat ff_mpegps_demuxer;
++    DVDISOContext *c = s->priv_data;
++    uint8_t *buf = av_malloc(DVD_SUBDEMUX_SECTORS * DVD_SECTOR);
++    int ret;
++
++    if (!buf)
++        return AVERROR(ENOMEM);
++    ffio_init_context(&c->mpeg_pb, buf, DVD_SUBDEMUX_SECTORS * DVD_SECTOR, 0, s,
++                      dvd_read_data, NULL, NULL);
++    c->mpeg_pb.pub.seekable = 0;
++
++    if (!(c->mpeg_ctx = avformat_alloc_context()))
++        return AVERROR(ENOMEM);
++    if ((ret = ff_copy_whiteblacklists(c->mpeg_ctx, s)) < 0) {
++        avformat_free_context(c->mpeg_ctx);
++        c->mpeg_ctx = NULL;
++        return ret;
++    }
++    c->mpeg_ctx->flags                = AVFMT_FLAG_CUSTOM_IO | AVFMT_FLAG_GENPTS;
++    c->mpeg_ctx->ctx_flags           |= AVFMTCTX_UNSEEKABLE;
++    c->mpeg_ctx->probesize            = 0;
++    c->mpeg_ctx->max_analyze_duration = 0;
++    c->mpeg_ctx->interrupt_callback   = s->interrupt_callback;
++    c->mpeg_ctx->pb                   = &c->mpeg_pb.pub;
++    c->mpeg_ctx->io_open              = NULL;
++    return avformat_open_input(&c->mpeg_ctx, "", &ff_mpegps_demuxer.p, NULL);
++}
++
++static void dvd_jump(AVFormatContext *s, int cell, uint32_t vobu, int64_t time)
++{
++    DVDISOContext *c = s->priv_data;
++
++    c->cell          = cell;
++    c->vobu_next     = vobu;
++    c->vobu_left     = 0;
++    c->vobu_e_ptm    = AV_NOPTS_VALUE;
++    c->jump_time     = time;
++    c->discontinuity = 0;
++    c->play_started  = 0;
++    for (int i = 0; i < s->nb_streams; i++)
++        c->prev_pts[i] = AV_NOPTS_VALUE;
++}
++
++static int dvd_read_header(AVFormatContext *s)
++{
++    DVDISOContext *c = s->priv_data;
++    DiscDVDIfo vmg = { 0 }, vts = { 0 };
++    int64_t pgc;
++    int ttn, ret;
++
++    if (!(c->disc_io = ff_disc_io_wrap(s->pb, s->interrupt_callback)))
++        return AVERROR(ENOMEM);
++    if ((ret = ff_disc_io_read_dvd_ifo(c->disc_io, 0, &vmg)) < 0 ||
++        (ret = dvd_title_select(s, &vmg, &vts, &ttn)) < 0 ||
++        (ret = dvd_title_setup(s, &vts, ttn, &pgc)) < 0 ||
++        (ret = dvd_streams_setup(s, &vts, pgc)) < 0)
++        goto end;
++
++    if (!(c->prev_pts = av_malloc_array(s->nb_streams, sizeof(*c->prev_pts)))) {
++        ret = AVERROR(ENOMEM);
++        goto end;
++    }
++    s->duration = av_rescale(c->duration, AV_TIME_BASE, DVD_TIME_BASE);
++    dvd_jump(s, 0, c->cells[0].first_vobu, 0);
++    ret = dvd_subdemux_open(s);
++
++end:
++    av_free(vmg.data);
++    av_free(vts.data);
++    return ret;
++}
++
++static int dvd_read_packet(AVFormatContext *s, AVPacket *pkt)
++{
++    DVDISOContext *c = s->priv_data;
++    AVStream *st = NULL;
++    uint16_t frame_size;
++    uint8_t bsid;
++    int ret;
++
++    /* after a failed sub-demuxer reset */
++    if (!c->mpeg_ctx)
++        return AVERROR(EIO);
++    if ((ret = av_read_frame(c->mpeg_ctx, pkt)) < 0) {
++        if (ret != AVERROR_EOF || !c->discontinuity)
++            return ret;
++        c->discontinuity = 0;
++        c->ts_offset     = c->next_ts_offset;
++        dvd_subdemux_close(s);
++        return (ret = dvd_subdemux_open(s)) < 0 ? ret : FFERROR_REDO;
++    }
++
++    for (int i = 0; i < s->nb_streams && !st; i++)
++        if (s->streams[i]->id == c->mpeg_ctx->streams[pkt->stream_index]->id)
++            st = s->streams[i];
++    if (!st || pkt->pts == AV_NOPTS_VALUE || pkt->dts == AV_NOPTS_VALUE)
++        return FFERROR_REDO;
++    /* start at a GOP after opening or seeking */
++    if (!c->play_started) {
++        if (st->codecpar->codec_type != AVMEDIA_TYPE_VIDEO || !(pkt->flags & AV_PKT_FLAG_KEY))
++            return FFERROR_REDO;
++        c->play_started = 1;
++    }
++    pkt->pts         += c->ts_offset;
++    pkt->dts         += c->ts_offset;
++    pkt->stream_index = st->index;
++    /* sub-demuxer positions restart with it and are unset inside PES packets, which parsers mistake */
++    pkt->pos          = avio_tell(s->pb);
++    if (pkt->pts < 0)
++        return FFERROR_REDO;
++    /* DVD muxers can end seamless segments on a duplicate or partial AC-3 frame */
++    if (st->codecpar->codec_id == AV_CODEC_ID_AC3) {
++        if (pkt->pts <= c->prev_pts[st->index] ||
++            av_ac3_parse_header(pkt->data, pkt->size, &bsid, &frame_size) < 0 ||
++            pkt->size != frame_size)
++            return FFERROR_REDO;
++        c->prev_pts[st->index] = pkt->pts;
++    }
++    return 0;
++}
++
++static int dvd_load_vobus(AVFormatContext *s)
++{
++    DVDISOContext *c = s->priv_data;
++    uint8_t hdr[4];
++    int64_t nb;
++    int ret;
++
++    if (c->vobus || !c->admap)
++        return 0;
++    if ((ret = dvd_read(s, c->admap, hdr, sizeof(hdr))) < 0)
++        return ret;
++    nb = (AV_RB32(hdr) + 1LL - 4) / 4;
++    if (nb <= 0 || nb > DVD_MAX_VOBUS) {
++        av_log(s, AV_LOG_WARNING, "Invalid VOBU address map, seeking by cell\n");
++        c->admap = 0;
++        return 0;
++    }
++    if (!(c->vobus = av_malloc(4 + 4 * nb)))
++        return AVERROR(ENOMEM);
++    if ((ret = dvd_read(s, c->admap, c->vobus, 4 + 4 * nb)) < 0) {
++        av_freep(&c->vobus);
++        return ret;
++    }
++    c->nb_vobus = nb;
++    return 0;
++}
++
++#define DVD_VOBU(c, i) AV_RB32((c)->vobus + 4 + 4 * (i))
++
++/* Returns 1 with the VOBU's start PTM if lba is a VOBU of the cell (and not of another angle). */
++static int dvd_vobu_ptm(AVFormatContext *s, const DVDCell *cell, uint32_t lba, int64_t *ptm)
++{
++    uint8_t nav[DVD_SECTOR];
++    int ret = dvd_read_nav(s, lba, nav);
++
++    if (ret <= 0 || AV_RB16(NAV_DSI(nav) + 0x18) != cell->vob_id || NAV_DSI(nav)[0x1B] != cell->cell_id)
++        return ret < 0 ? ret : 0;
++    *ptm = AV_RB32(NAV_PCI(nav) + 0x0C);
++    return 1;
++}
++
++/* Finds the cell's last VOBU starting at or before *time, and updates *time to its start. */
++static int dvd_seek_in_cell(AVFormatContext *s, const DVDCell *cell, int64_t *time, uint32_t *vobu)
++{
++    DVDISOContext *c = s->priv_data;
++    int64_t target = *time - cell->start, first_ptm, ptm;
++    int lo = 0, hi, ret;
++
++    *vobu = cell->first_vobu;
++    *time = cell->start;
++    if ((ret = dvd_load_vobus(s)) < 0 || !c->nb_vobus ||
++        (ret = dvd_vobu_ptm(s, cell, cell->first_vobu, &first_ptm)) <= 0)
++        return ret;
++
++    while (lo < c->nb_vobus && DVD_VOBU(c, lo) <= cell->first_vobu)
++        lo++;
++    for (hi = lo; hi < c->nb_vobus && DVD_VOBU(c, hi) <= cell->last_vobu; hi++);
++    hi--;
++    /* VOBUs of other angles are skipped forward */
++    while (lo <= hi) {
++        int mid = lo + (hi - lo) / 2, j;
++        for (j = mid; j <= hi; j++)
++            if ((ret = dvd_vobu_ptm(s, cell, DVD_VOBU(c, j), &ptm)) != 0)
++                break;
++        if (ret < 0)
++            return ret;
++        if (j > hi || ptm - first_ptm > target) {
++            hi = mid - 1;
++        } else {
++            *vobu = DVD_VOBU(c, j);
++            *time = cell->start + ptm - first_ptm;
++            lo    = j + 1;
++        }
++    }
++    return 0;
++}
++
++static int dvd_read_seek(AVFormatContext *s, int stream_index, int64_t timestamp, int flags)
++{
++    DVDISOContext *c = s->priv_data;
++    uint32_t vobu;
++    int cell = 0, ret;
++
++    if (flags & AVSEEK_FLAG_BYTE)
++        return AVERROR(ENOSYS);
++    timestamp = av_clip64(timestamp, 0, c->duration);
++    while (cell + 1 < c->nb_cells && c->cells[cell + 1].start <= timestamp)
++        cell++;
++    if ((ret = dvd_seek_in_cell(s, &c->cells[cell], &timestamp, &vobu)) < 0)
++        return ret;
++
++    av_log(s, AV_LOG_DEBUG, "Seeking to cell %d sector %"PRIu32" at %"PRId64"\n", cell, vobu, timestamp);
++    dvd_jump(s, cell, vobu, timestamp);
++    dvd_subdemux_close(s);
++    return dvd_subdemux_open(s);
++}
++
++static int dvd_read_close(AVFormatContext *s)
++{
++    DVDISOContext *c = s->priv_data;
++
++    dvd_subdemux_close(s);
++    av_freep(&c->cells);
++    av_freep(&c->vobus);
++    av_freep(&c->prev_pts);
++    ff_disc_io_close(&c->disc_io);
++    return 0;
++}
++
++#define OFFSET(x) offsetof(DVDISOContext, x)
++static const AVOption dvd_options[] = {
++    { "title", "title number (0=longest)", OFFSET(opt_title), AV_OPT_TYPE_INT, { .i64 = 0 }, 0, 99, AV_OPT_FLAG_DECODING_PARAM },
++    { NULL }
++};
++
++static const AVClass dvd_class = {
++    .class_name = "DVD-Video demuxer",
++    .item_name  = av_default_item_name,
++    .option     = dvd_options,
++    .version    = LIBAVUTIL_VERSION_INT,
++};
++
++const FFInputFormat ff_dvdvideo_demuxer = {
++    .p.name         = "dvdvideo",
++    .p.long_name    = NULL_IF_CONFIG_SMALL("DVD-Video"),
++    .p.priv_class   = &dvd_class,
++    .p.flags        = AVFMT_SHOW_IDS | AVFMT_TS_DISCONT | AVFMT_SEEK_TO_PTS |
++                      AVFMT_NO_BYTE_SEEK | AVFMT_NOGENSEARCH | AVFMT_NOBINSEARCH,
++    .priv_data_size = sizeof(DVDISOContext),
++    .flags_internal = FF_INFMT_FLAG_INIT_CLEANUP,
++    .read_header    = dvd_read_header,
++    .read_packet    = dvd_read_packet,
++    .read_seek      = dvd_read_seek,
++    .read_close     = dvd_read_close,
++};
