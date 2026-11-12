@@ -1,0 +1,40 @@
+--- a/libavcodec/mfenc.c
++++ b/libavcodec/mfenc.c
+@@ -50,6 +50,7 @@
+     int async_need_input, async_have_output, async_marker;
+     int64_t reorder_delay;
+     ICodecAPI *codec_api;
++    int64_t cur_bit_rate;
+     // set by AVOption
+     int opt_enc_rc;
+     int opt_enc_quality;
+@@ -508,6 +509,15 @@
+         if (c->is_video && c->codec_api) {
+             if (c->frame->pict_type == AV_PICTURE_TYPE_I || !c->sample_sent)
+                 ICodecAPI_SetValue(c->codec_api, &ff_CODECAPI_AVEncVideoForceKeyFrame, FF_VAL_VT_UI4(1));
++            // Since Windows 8 the mean bit rate may change while encoding, as
++            // nvenc/qsvenc already allow: follow the caller's bit_rate field.
++            if (avctx->bit_rate > 0 && avctx->bit_rate != c->cur_bit_rate) {
++                HRESULT hr = ICodecAPI_SetValue(c->codec_api, &ff_CODECAPI_AVEncCommonMeanBitRate,
++                                                FF_VAL_VT_UI4(avctx->bit_rate));
++                if (FAILED(hr))
++                    av_log(avctx, AV_LOG_ERROR, "dynamic bitrate failed: %s\n", ff_hr_str(hr));
++                c->cur_bit_rate = avctx->bit_rate; // also on failure: no per-frame retry
++            }
+         }
+     }
+ 
+@@ -702,8 +712,12 @@
+         if (avctx->gop_size > 0)
+             ICodecAPI_SetValue(c->codec_api, &ff_CODECAPI_AVEncMPVGOPSize, FF_VAL_VT_UI4(avctx->gop_size));
+ 
++        // rc_buffer_size is in bits, but for H.264 this property is the HRD
++        // buffer size in bytes: passed as is, the buffer was 8 times too big.
+         if(avctx->rc_buffer_size > 0)
+-            ICodecAPI_SetValue(c->codec_api, &ff_CODECAPI_AVEncCommonBufferSize, FF_VAL_VT_UI4(avctx->rc_buffer_size));
++            ICodecAPI_SetValue(c->codec_api, &ff_CODECAPI_AVEncCommonBufferSize,
++                               FF_VAL_VT_UI4(avctx->codec_id == AV_CODEC_ID_H264 ?
++                                             avctx->rc_buffer_size / 8 : avctx->rc_buffer_size));
+ 
+         if(avctx->compression_level >= 0)
+             ICodecAPI_SetValue(c->codec_api, &ff_CODECAPI_AVEncCommonQualityVsSpeed, FF_VAL_VT_UI4(avctx->compression_level));
