@@ -2,57 +2,40 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
 cd "${SCRIPT_DIR}" || exit 1
 source "${SCRIPT_DIR}/../env_config.sh"
 
+# Official FFmpeg nv-codec-headers release, pinned to the tag's commit.
 VERSION="12.2.72.0"
+COMMIT="c69278340ab1d5559c7d7bf0edf615dc33ddbba7"
 CURRENTPATH="${SCRIPT_DIR}"
-ffnvcodec_pc_file="${CURRENTPATH}/nv-codec-headers/lib/pkgconfig/ffnvcodec.pc"
+SRC_DIR="${DEPENDSPATH}/nv-codec-headers-${VERSION}"
+PREFIX="${CURRENTPATH}/output"
+ffnvcodec_pc_file="${PREFIX}/lib/pkgconfig/ffnvcodec.pc"
 
-if [ ! -e "${DEPENDSPATH}/nv-codec-headers" ]; then
-    echo "Downloading nv-codec-headers"
-    pushd "${DEPENDSPATH}" || exit
-    git clone --depth=1 --branch "n${VERSION}" https://github.com/FFmpeg/nv-codec-headers.git nv-codec-headers || exit
-    popd || exit
-else
-    echo "Update nv-codec-headers"
-    pushd "${DEPENDSPATH}/nv-codec-headers" || exit
-    git checkout n${VERSION} || exit
-    #git pull
-    popd || exit
+if [ ! -e "${SRC_DIR}" ]; then
+    echo "Downloading nv-codec-headers ${VERSION}"
+    git clone --depth=1 --branch "n${VERSION}" https://github.com/FFmpeg/nv-codec-headers.git "${SRC_DIR}" || exit
 fi
 
-rm -rf "${CURRENTPATH}/nv-codec-headers"
-mkdir -p "${CURRENTPATH}/nv-codec-headers"
+src_commit="$(git -C "${SRC_DIR}" -c safe.directory="${SRC_DIR}" rev-parse HEAD)" || exit
+if [ "${src_commit}" != "${COMMIT}" ]; then
+    echo "nv-codec-headers commit mismatch: expected ${COMMIT}, got ${src_commit}" >&2
+    exit 1
+fi
 
-pushd "${DEPENDSPATH}/nv-codec-headers" || exit
-make PREFIX="${CURRENTPATH}/nv-codec-headers" install
-if [ $? -ne 0 ]; then
+rm -rf "${PREFIX}"
+make -C "${SRC_DIR}" PREFIX="${PREFIX}" install || {
     echo "ffnvcodec install failed." >&2
-    popd || true
-    exit 1
-fi
-popd || exit
-
-if [ ! -f "${CURRENTPATH}/nv-codec-headers/include/ffnvcodec/nvEncodeAPI.h" ]; then
-    echo "ffnvcodec header missing after install." >&2
-    exit 1
-fi
-
-if [ ! -f "${ffnvcodec_pc_file}" ]; then
-    echo "ffnvcodec pkg-config file missing after install." >&2
-    exit 1
-fi
-
-tmp_pc_file="$(mktemp)" || exit 1
-sed \
-    -e 's|^prefix=.*|prefix=${pcfiledir}/../..|' \
-    -e 's|^includedir=.*|includedir=${prefix}/include|' \
-    "${ffnvcodec_pc_file}" > "${tmp_pc_file}" || {
-        rm -f "${tmp_pc_file}"
-        exit 1
-    }
-cat "${tmp_pc_file}" > "${ffnvcodec_pc_file}" || {
-    rm -f "${tmp_pc_file}"
     exit 1
 }
-rm -f "${tmp_pc_file}"
 
-echo "ffnvcodec headers ready: ${CURRENTPATH}/nv-codec-headers"
+if [ ! -f "${PREFIX}/include/ffnvcodec/nvEncodeAPI.h" ] || [ ! -f "${ffnvcodec_pc_file}" ]; then
+    echo "ffnvcodec headers or pkg-config file missing after install." >&2
+    exit 1
+fi
+
+# Make the .pc file relocatable so the same output works from WSL and MSYS2.
+sed -i \
+    -e 's|^prefix=.*|prefix=${pcfiledir}/../..|' \
+    -e 's|^includedir=.*|includedir=${prefix}/include|' \
+    "${ffnvcodec_pc_file}" || exit
+
+echo "ffnvcodec headers ready: ${PREFIX}"

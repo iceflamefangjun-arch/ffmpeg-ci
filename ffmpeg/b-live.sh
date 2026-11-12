@@ -75,24 +75,6 @@ pkg_module_ready() {
     pkg-config --exists ${pkg_query} >/dev/null 2>&1
 }
 
-pkg_module_header_ready() {
-    local module="$1"
-    local header="$2"
-    local cflags flag include_dir
-
-    cflags="$(pkg-config --cflags "${module}" 2>/dev/null)" || return 1
-    for flag in ${cflags}; do
-        case "${flag}" in
-          -I*)
-              include_dir="${flag#-I}"
-              [ -f "${include_dir}/${header}" ] && return 0
-              ;;
-        esac
-    done
-
-    return 1
-}
-
 build_enable_flags() {
     local kind="$1"
     shift
@@ -313,7 +295,6 @@ do
     ffmpeg_live_libx264_flag="--disable-libx264"
     ffmpeg_live_libfdk_aac_flag="--disable-libfdk-aac"
     ffmpeg_live_libmfx_flag="--disable-libmfx"
-    ffmpeg_live_nvenc_flag="--disable-nvenc"
     ffmpeg_live_mediafoundation_flag="--enable-mediafoundation"
     ffmpeg_live_optional_cppflags=
     ffmpeg_live_optional_lib_path=
@@ -362,8 +343,8 @@ do
     if [ -n "${libmfx_dep_root}" ]; then
         libmfx_pc_dir="${libmfx_dep_root}/lib/pkgconfig"
     fi
-    ffnvcodec_pc_dir="${CURRENTPATH}/../ffnvcodec/nv-codec-headers/lib/pkgconfig"
-    ffnvcodec_include_dir="${CURRENTPATH}/../ffnvcodec/nv-codec-headers/include"
+    ffnvcodec_pc_dir="${CURRENTPATH}/../ffnvcodec/output/lib/pkgconfig"
+    ffnvcodec_include_dir="${CURRENTPATH}/../ffnvcodec/output/include"
 
     if [ ! -d "${pthread_include_dir}" ] || [ ! -f "${pthread_lib_file}" ]; then
         echo "pthread-win32 include or library missing for ${ARCH}." >&2
@@ -456,13 +437,8 @@ do
         echo "libmfx metadata missing/incompatible (<1.28 or >=2.0) for ${ARCH}: disabling QSV encoders."
     fi
 
-    if pkg_module_ready "${ffnvcodec_pc_dir}" "ffnvcodec >= 12.1.14.0" && pkg_module_header_ready "ffnvcodec" "ffnvcodec/nvEncodeAPI.h"; then
-        ffmpeg_live_nvenc_flag="--enable-nvenc"
-        ffmpeg_live_encoder_flags="${ffmpeg_live_encoder_flags} --enable-encoder=h264_nvenc --enable-encoder=hevc_nvenc"
-        ffmpeg_live_video_encoder_ready=1
-    else
-        echo "ffnvcodec metadata or headers missing/incompatible for ${ARCH}: disabling NVENC encoders."
-    fi
+    # NVENC is mandatory: --enable-nvenc makes configure fail if ffnvcodec is unusable.
+    ffmpeg_live_encoder_flags="${ffmpeg_live_encoder_flags} --enable-encoder=h264_nvenc --enable-encoder=hevc_nvenc"
 
     # Media Foundation encoders are always available on Windows target
     ffmpeg_live_encoder_flags="${ffmpeg_live_encoder_flags} --enable-encoder=h264_mf --enable-encoder=hevc_mf --enable-encoder=aac_mf"
@@ -574,7 +550,7 @@ do
         ${ffmpeg_live_libx264_flag}         \
         ${ffmpeg_live_libfdk_aac_flag}      \
         ${ffmpeg_live_libmfx_flag}          \
-        ${ffmpeg_live_nvenc_flag}           \
+        --enable-nvenc                      \
         --extra-libs="${LIBS}"              \
         --extra-cflags="${CFLAGS}"          \
         --extra-ldflags="${LDFLAGS}"        \
